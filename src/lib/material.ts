@@ -75,6 +75,12 @@ export async function parsePdf(file: File, onProgress?: ParseProgress): Promise<
     typeof window === 'undefined'
       ? await import('pdfjs-dist/legacy/build/pdf.mjs')
       : await import('pdfjs-dist')
+  if (typeof window !== 'undefined') {
+    // 浏览器端必须配置 worker 脚本地址（Vite 以资产 URL 引入），否则解析 PDF 报
+    // "No GlobalWorkerOptions.workerSrc specified"
+    const mod = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')) as { default: string }
+    pdfjs.GlobalWorkerOptions.workerSrc = mod.default
+  }
   const buf = await file.arrayBuffer()
   const doc = await pdfjs.getDocument({ data: buf }).promise
   const pages: MaterialPage[] = []

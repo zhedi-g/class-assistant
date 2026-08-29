@@ -33,11 +33,15 @@ try {
   await page.waitForSelector('[data-testid="upload-btn"]', { timeout: 5000 })
   check('「资料」Tab 可进入，上传按钮可见', true)
 
-  // ── 上传 txt 资料 ──
-  await page.setInputFiles('[data-testid="mat-input"]', fileURLToPath(SAMPLE_TXT))
+  // ── 上传 txt + pdf（真实浏览器 pdf.js worker 路径）──
+  const PDF_SAMPLE = new URL('../fixtures/sample.pdf', import.meta.url)
+  await page.setInputFiles('[data-testid="mat-input"]', [fileURLToPath(SAMPLE_TXT), fileURLToPath(PDF_SAMPLE)])
   await page.waitForSelector('[data-testid="material-card"]', { timeout: 8000 })
-  const card = (await page.getByTestId('material-toggle').textContent()) || ''
-  check('上传后卡片出现且解析就绪', card.includes('1 页'), card.trim().slice(0, 40))
+  await page.waitForTimeout(600) // 等两个文件都解析完
+  const cardCount = await page.getByTestId('material-card').count()
+  check('txt + pdf 两个资料卡均出现', cardCount === 2, `实际 ${cardCount} 张卡`)
+  const allText = (await page.locator('body').textContent()) || ''
+  check('PDF 真实解析成功（无 worker 报错且文字层可读）', allText.includes('Kinetic Energy Theorem') && !allText.includes('解析失败'), '')
 
   // ── 展开详情（上传后已自动展开则不重复点）──
   const alreadyOpen = await page
@@ -80,7 +84,7 @@ try {
   await page.reload({ waitUntil: 'networkidle' })
   await page.locator('nav').getByText('资料').click()
   await page.waitForSelector('[data-testid="material-card"]', { timeout: 5000 })
-  await page.getByTestId('material-toggle').click()
+  await page.getByTestId('material-toggle').first().click()
   await page.waitForSelector('[data-testid="analysis-result"]', { timeout: 5000 })
   check('刷新后分析结果仍在（持久化）', ((await page.getByTestId('analysis-result').textContent()) || '').includes('提纲'))
 } catch (e) {
