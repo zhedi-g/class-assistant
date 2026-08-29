@@ -3,12 +3,13 @@ import { fmtDuration, resumeCapture, useSession } from '../store/session'
 import { loadSecrets, type SecretMap } from '../lib/secretStore'
 import { vibrateSupported } from '../lib/vibrate'
 import { useSettings } from '../store/settings'
+import AskSheet, { type SheetSeg } from '../components/AskSheet'
 
 const MILESTONES = [
   { id: 'M1', label: '设置与密钥管理', done: true },
   { id: 'M2', label: '实时语音转写（讯飞）', done: true },
-  { id: 'M3', label: '关键词震动提醒', done: false },
-  { id: 'M4', label: '生词即查 + 课中 AI 问答', done: false },
+  { id: 'M3', label: '关键词震动提醒', done: true },
+  { id: 'M4', label: '生词即查 + 课中 AI 问答', done: true },
   { id: 'M5+', label: 'PPT/教材导入 · 课后学习包', done: false },
 ]
 
@@ -16,6 +17,7 @@ export default function LivePage() {
   const s = useSession()
   const recording = s.status === 'recording'
   const [elapsed, setElapsed] = useState(0)
+  const [sheetSeg, setSheetSeg] = useState<SheetSeg | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -49,7 +51,13 @@ export default function LivePage() {
         </span>
       </header>
 
-      {recording ? <RecordingView s={s} elapsed={elapsed} listRef={listRef} /> : <IdleView />}
+      {recording ? (
+        <RecordingView s={s} elapsed={elapsed} listRef={listRef} onSelectSeg={setSheetSeg} />
+      ) : (
+        <IdleView />
+      )}
+
+      {sheetSeg && <AskSheet seg={sheetSeg} onClose={() => setSheetSeg(null)} />}
     </div>
   )
 }
@@ -118,10 +126,12 @@ function RecordingView({
   s,
   elapsed,
   listRef,
+  onSelectSeg,
 }: {
   s: ReturnType<typeof useSession.getState>
   elapsed: number
   listRef: React.RefObject<HTMLDivElement | null>
+  onSelectSeg: (seg: { id: string; text: string }) => void
 }) {
   const connText =
     s.conn === 'open' ? '识别中' : s.conn === 'reconnecting' ? '重连中…' : '连接中…'
@@ -180,12 +190,14 @@ function RecordingView({
           <p
             key={seg.id}
             data-testid="segment"
+            onClick={() => onSelectSeg({ id: seg.id, text: seg.text })}
             className={
-              seg.matched
+              'cursor-pointer active:opacity-70 ' +
+              (seg.matched
                 ? 'rounded-lg border border-amber-400 bg-amber-50 px-2 py-1.5 text-[15px] font-medium leading-relaxed dark:border-amber-500/50 dark:bg-amber-500/10'
                 : seg.marked
                   ? 'rounded-lg border border-amber-400/60 bg-amber-50 px-2 py-1.5 text-[15px] leading-relaxed dark:border-amber-500/40 dark:bg-amber-500/10'
-                  : 'text-[15px] leading-relaxed text-zinc-700 dark:text-zinc-300'
+                  : 'text-[15px] leading-relaxed text-zinc-700 dark:text-zinc-300')
             }
           >
             {seg.matched && (

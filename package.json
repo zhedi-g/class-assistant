@@ -10,7 +10,8 @@
     "preview": "vite preview --host",
     "test:m1": "node scripts/m1-test.mjs",
     "test:m2": "node scripts/m2-test.mjs",
-    "test:m3": "node scripts/m3-test.mjs"
+    "test:m3": "node scripts/m3-test.mjs",
+    "test:m4": "node scripts/m4-test.mjs"
   },
   "dependencies": {
     "dexie": "^4.0.0",
