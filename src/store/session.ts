@@ -5,11 +5,12 @@ import { createCorrector, type Corrector } from '../lib/correction'
 import { db } from '../lib/db'
 import { useSettings } from './settings'
 import { loadSecrets } from '../lib/secretStore'
+import { unlockVibration, vibrateAlert } from '../lib/vibrate'
 
 interface SessionState {
   status: 'idle' | 'recording'
   startedAt: number | null
-  segments: { id: string; t: number; text: string; raw?: string; marked: boolean }[]
+  segments: { id: string; t: number; text: string; raw?: string; marked: boolean; matched?: string }[]
   interim: string
   conn: 'connecting' | 'open' | 'reconnecting'
   reconnects: number
@@ -17,6 +18,9 @@ interface SessionState {
   connNote: string | null
   /** AI 实时校对是否已启用 */
   aiFix: boolean
+  /** 本次会话命中的提醒关键词 */
+  alertHits: { word: string; t: number }[]
+  alertBanner: { word: string } | null
   errMsg: string | null
   behindApp: boolean
   toast: string | null
@@ -30,7 +34,12 @@ let asr: IAsrSession | null = null
 let capture: Capture | null = null
 let wakeLock: { release?: () => Promise<void> } | null = null
 let pendingMark = false
+let pendingHitWord: string | null = null
+let alertWordsList: string[] = []
+let segHitWords = new Set<string>()
+let lastAlertAt = 0
 let toastTimer: ReturnType<typeof setTimeout> | null = null
+let bannerTimer: ReturnType<typeof setTimeout> | null = null
 
 /** 切后台回来后调用：AudioContext 可能被系统挂起，恢复采集 */
 export function resumeCapture(): void {
@@ -41,6 +50,32 @@ function showToast(msg: string) {
   if (toastTimer) clearTimeout(toastTimer)
   useSession.setState({ toast: msg })
   toastTimer = setTimeout(() => useSession.setState({ toast: null }), 2600)
+}
+
+function showBanner(word: string) {
+  if (bannerTimer) clearTimeout(bannerTimer)
+  useSession.setState({ alertBanner: { word } })
+  bannerTimer = setTimeout(() => useSession.setState({ alertBanner: null }), 4500)
+}
+
+/** 关键词检测：段内去重 + 全局 3s 冷却；命中即震动+横幅 */
+function detectKeyword(text: string): string | null {
+  if (!alertWordsList.length) return null
+  const now = Date.now()
+  for (const w of alertWordsList) {
+    if (segHitWords.has(w)) continue
+    if (text.includes(w) && now - lastAlertAt >= 3000) {
+      segHitWords.add(w)
+      lastAlertAt = now
+      vibrateAlert()
+      showBanner(w)
+      useSession.setState((st) => ({
+        alertHits: [...st.alertHits, { word: w, t: now - (st.startedAt ?? now) }],
+      }))
+      return w
+    }
+  }
+  return null
 }
 
 export function fmtDuration(sec: number): string {
@@ -58,6 +93,8 @@ export const useSession = create<SessionState>()((set, get) => ({
   reconnects: 0,
   connNote: null,
   aiFix: false,
+  alertHits: [],
+  alertBanner: null,
   errMsg: null,
   behindApp: false,
   toast: null,
@@ -80,6 +117,16 @@ export const useSession = create<SessionState>()((set, get) => ({
       .filter(Boolean)
     const hotwords = hotwordsList.join(',')
 
+    // 提醒关键词：逐行解析
+    alertWordsList = s.alertWords
+      .split(/\r?\n/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+    segHitWords = new Set()
+    lastAlertAt = 0
+    pendingHitWord = null
+    unlockVibration() // 借用户点击解锁振动权限
+
     // AI 实时校对：优先免费 GLM-Flash，未配 Key 则为纯讯飞模式
     let corrector: Corrector | null = null
     if (import.meta.env.VITE_MOCK_ASR !== '1') {
@@ -95,6 +142,8 @@ export const useSession = create<SessionState>()((set, get) => ({
       reconnects: 0,
       connNote: null,
       aiFix: !!corrector,
+      alertHits: [],
+      alertBanner: null,
       errMsg: null,
       behindApp: false,
     })
@@ -110,10 +159,22 @@ export const useSession = create<SessionState>()((set, get) => ({
             reconnects: silent ? st.reconnects : st.reconnects + 1,
             connNote: silent ? st.connNote : (reason ?? st.connNote),
           })),
-        onInterim: (t) => set({ interim: t }),
+        onInterim: (t) => {
+          set({ interim: t })
+          const hit = detectKeyword(t)
+          if (hit) {
+            pendingMark = true
+            pendingHitWord = hit
+          }
+        },
         onFinal: (t) => {
-          const marked = pendingMark
+          // final 文本先过一遍关键词（可能 interim 阶段没来得及命中）
+          const finalHit = detectKeyword(t)
+          const hitWord = finalHit ?? pendingHitWord
+          const marked = pendingMark || !!hitWord
           pendingMark = false
+          pendingHitWord = null
+          segHitWords = new Set()
           const segId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
           set((st) => ({
             segments: [
@@ -123,6 +184,7 @@ export const useSession = create<SessionState>()((set, get) => ({
                 t: Date.now() - (st.startedAt ?? Date.now()),
                 text: t,
                 marked,
+                matched: hitWord ?? undefined,
               },
             ],
             interim: '',
@@ -190,6 +252,7 @@ export const useSession = create<SessionState>()((set, get) => ({
 
     if (segments.length > 0 || durationSec >= 5) {
       const marks = segments.filter((x) => x.marked).length
+      const hits = useSession.getState().alertHits.length
       await db.lessons.add({
         date: new Date().toLocaleDateString('zh-CN'),
         startTs: st.startedAt ?? Date.now(),
@@ -197,7 +260,11 @@ export const useSession = create<SessionState>()((set, get) => ({
         segments,
         createdAt: Date.now(),
       })
-      showToast(`本节课已保存：${segments.length} 条内容 · ${marks} 个重点 · ${fmtDuration(durationSec)}`)
+      showToast(
+        `本节课已保存：${segments.length} 条内容 · ${marks} 个重点` +
+          (hits ? ` · 🔔${hits} 次提醒` : '') +
+          ` · ${fmtDuration(durationSec)}`,
+      )
     }
   },
 

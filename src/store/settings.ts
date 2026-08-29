@@ -23,9 +23,13 @@ interface SettingsState {
   iflytekAppId: string
   /** 识别热词，每行一个 */
   hotwords: string
+  /** 提醒关键词，每行一个（命中即震动+标记） */
+  alertWords: string
   theme: 'dark' | 'light'
   setSettings: (patch: Partial<Omit<SettingsState, 'setSettings'>>) => void
 }
+
+export const DEFAULT_ALERT_WORDS = ['考试', '要考', '必考', '重点', '作业', '交作业', '点名', '签到', '划重点'].join('\n')
 
 export const useSettings = create<SettingsState>()(
   persist(
@@ -35,6 +39,7 @@ export const useSettings = create<SettingsState>()(
       deepseekModel: 'deepseek-v4-flash',
       iflytekAppId: '',
       hotwords: '',
+      alertWords: DEFAULT_ALERT_WORDS,
       theme: 'dark',
       setSettings: (patch) => set(patch),
     }),

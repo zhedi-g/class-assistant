@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { fmtDuration, resumeCapture, useSession } from '../store/session'
 import { loadSecrets, type SecretMap } from '../lib/secretStore'
+import { vibrateSupported } from '../lib/vibrate'
+import { useSettings } from '../store/settings'
 
 const MILESTONES = [
   { id: 'M1', label: '设置与密钥管理', done: true },
@@ -54,6 +56,7 @@ export default function LivePage() {
 
 function IdleView() {
   const s = useSession()
+  const alertWords = useSettings((st) => st.alertWords)
   const [secrets, setSecrets] = useState<SecretMap | null>(null)
   useEffect(() => {
     loadSecrets().then(setSecrets)
@@ -74,6 +77,12 @@ function IdleView() {
       {s.errMsg && (
         <p data-testid="err" className="rounded-xl border border-red-300/50 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">
           {s.errMsg}
+        </p>
+      )}
+
+      {!vibrateSupported() && alertWords.trim() && (
+        <p className="rounded-xl bg-zinc-100 px-3 py-2 text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+          当前浏览器不支持震动（iOS 常见）：命中关键词时将以屏幕横幅提醒代替，震动需在安卓端或后续 APK 版本使用。
         </p>
       )}
 
@@ -127,6 +136,15 @@ function RecordingView({
         </p>
       )}
 
+      {s.alertBanner && (
+        <div
+          data-testid="alert-banner"
+          className="rounded-xl border border-amber-400/70 bg-amber-50 px-3 py-2.5 text-sm font-medium text-amber-700 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-400"
+        >
+          🔔 检测到关键词「{s.alertBanner.word}」——已震动并标记重点
+        </div>
+      )}
+
       <div className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-900">
         <span className="flex items-center gap-1.5 text-zinc-500">
           <span data-testid="conn-dot" className={`h-2 w-2 rounded-full ${connColor}`} />
@@ -138,6 +156,11 @@ function RecordingView({
         <span data-testid="elapsed" className="font-mono text-sm font-semibold">
           {fmtDuration(elapsed)}
         </span>
+        {s.alertHits.length > 0 && (
+          <span data-testid="alert-count" className="text-amber-500">
+            🔔{s.alertHits.length}
+          </span>
+        )}
         {s.reconnects > 0 && <span className="text-amber-500">重连 {s.reconnects} 次</span>}
       </div>
       {s.connNote && <p className="px-1 text-[11px] text-zinc-400 dark:text-zinc-600">{s.connNote}</p>}
@@ -158,12 +181,19 @@ function RecordingView({
             key={seg.id}
             data-testid="segment"
             className={
-              seg.marked
-                ? 'rounded-lg border border-amber-400/60 bg-amber-50 px-2 py-1.5 text-[15px] leading-relaxed dark:border-amber-500/40 dark:bg-amber-500/10'
-                : 'text-[15px] leading-relaxed text-zinc-700 dark:text-zinc-300'
+              seg.matched
+                ? 'rounded-lg border border-amber-400 bg-amber-50 px-2 py-1.5 text-[15px] font-medium leading-relaxed dark:border-amber-500/50 dark:bg-amber-500/10'
+                : seg.marked
+                  ? 'rounded-lg border border-amber-400/60 bg-amber-50 px-2 py-1.5 text-[15px] leading-relaxed dark:border-amber-500/40 dark:bg-amber-500/10'
+                  : 'text-[15px] leading-relaxed text-zinc-700 dark:text-zinc-300'
             }
           >
-            {seg.marked && '🚩 '}
+            {seg.matched && (
+              <span className="mr-1.5 rounded bg-amber-200/70 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-500/25 dark:text-amber-300">
+                🔔{seg.matched}
+              </span>
+            )}
+            {seg.marked && !seg.matched && '🚩 '}
             {seg.text}
           </p>
         ))}

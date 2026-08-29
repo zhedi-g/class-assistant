@@ -5,7 +5,10 @@ export interface Segment {
   /** 距开课的毫秒数 */
   t: number
   text: string
+  raw?: string
   marked: boolean
+  /** 命中的提醒关键词（M3） */
+  matched?: string
 }
 
 export interface LessonRecord {

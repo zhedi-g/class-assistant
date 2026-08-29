@@ -107,13 +107,20 @@ export default function RecordsPage() {
                       <p
                         key={seg.id}
                         className={
-                          seg.marked
-                            ? 'rounded-lg border border-amber-400/60 bg-amber-50 px-2 py-1.5 text-sm leading-relaxed dark:border-amber-500/40 dark:bg-amber-500/10'
-                            : 'text-sm leading-relaxed text-zinc-700 dark:text-zinc-300'
+                          seg.matched
+                            ? 'rounded-lg border border-amber-400 bg-amber-50 px-2 py-1.5 text-sm leading-relaxed dark:border-amber-500/50 dark:bg-amber-500/10'
+                            : seg.marked
+                              ? 'rounded-lg border border-amber-400/60 bg-amber-50 px-2 py-1.5 text-sm leading-relaxed dark:border-amber-500/40 dark:bg-amber-500/10'
+                              : 'text-sm leading-relaxed text-zinc-700 dark:text-zinc-300'
                         }
                       >
                         <span className="mr-2 font-mono text-[11px] text-zinc-400">{fmtOffset(seg.t)}</span>
-                        {seg.marked && '🚩 '}
+                        {seg.matched && (
+                          <span className="mr-1 rounded bg-amber-200/70 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-500/25 dark:text-amber-300">
+                            🔔{seg.matched}
+                          </span>
+                        )}
+                        {seg.marked && !seg.matched && '🚩 '}
                         {seg.text}
                       </p>
                     ))}

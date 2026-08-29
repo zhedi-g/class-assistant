@@ -9,7 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host",
     "test:m1": "node scripts/m1-test.mjs",
-    "test:m2": "node scripts/m2-test.mjs"
+    "test:m2": "node scripts/m2-test.mjs",
+    "test:m3": "node scripts/m3-test.mjs"
   },
   "dependencies": {
     "dexie": "^4.0.0",

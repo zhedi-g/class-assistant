@@ -103,6 +103,17 @@ export default function SettingsPage() {
         />
       </Card>
 
+      {/* 提醒关键词 */}
+      <Card title="提醒关键词" desc="实时转写中命中这些词时，手机会震动、弹横幅并自动标记该句（每行一个词）。">
+        <textarea
+          data-testid="alert-words"
+          className={inputCls + ' min-h-24'}
+          placeholder={'考试\n作业\n划重点'}
+          value={s.alertWords}
+          onChange={(e) => s.setSettings({ alertWords: e.target.value })}
+        />
+      </Card>
+
       {/* 智谱 */}
       <Card title="AI 服务 · 智谱 GLM" desc="免费档即可覆盖日常答疑，推荐优先使用。">
         <SecretInput
