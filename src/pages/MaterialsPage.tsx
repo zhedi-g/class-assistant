@@ -5,6 +5,7 @@ import { detectKind, parseMaterial } from '../lib/material'
 import { analyzeMaterial, matchMaterialToLessons, mergeHotwords, pagesText, type MatchCandidate } from '../lib/analysis'
 import { ocrImage } from '../lib/ocr'
 import { askAI } from '../lib/ai'
+import PageSheet from '../components/PageSheet'
 import { useSettings } from '../store/settings'
 import { useSession } from '../store/session'
 
@@ -217,6 +218,7 @@ function MaterialDetail({
   const [qaInput, setQaInput] = useState('')
   const [qaStream, setQaStream] = useState('')
   const [qaBusy, setQaBusy] = useState(false)
+  const [pageSheet, setPageSheet] = useState<MaterialRecord['pages'][number] | null>(null)
   const setSettings = useSettings((s) => s.setSettings)
   const hotwords = useSettings((s) => s.hotwords)
 
@@ -277,7 +279,9 @@ function MaterialDetail({
         if (ok + fail > 0) setOcrNote(`图片页识别：成功 ${ok} 页${fail ? `，失败 ${fail} 页（可重试）` : ''}`)
       }
       const lessons = lessonIds.map((id) => lessonsCache[id]).filter(Boolean)
-      const analysis = await analyzeMaterial({ name: m.name, pages: m.pages }, lessons, lessonIds.length ? 'review' : 'preview', matchNote, {
+      // ⭐ 标记页注入：学生手动标注的重点在提示词中被优先参考
+      const pagesForAi = m.pages.map((p) => (p.marked ? { ...p, label: `⭐${p.label}` } : p))
+      const analysis = await analyzeMaterial({ name: m.name, pages: pagesForAi }, lessons, lessonIds.length ? 'review' : 'preview', matchNote, {
         onProgress: (note) => setAnalyzing(note),
         onRaw: (chars) => setAnalyzing(`AI 分析中…已生成 ${chars} 字`),
       })
@@ -453,6 +457,17 @@ function MaterialDetail({
       {ocrNote && <p className="pt-1 text-[11px] text-zinc-400">{ocrNote}</p>}
       {error && <p className="pt-1 text-xs text-red-500">{error}</p>}
 
+      {/* 页面级操作面板 */}
+      {pageSheet && m.id !== undefined && (
+        <PageSheet
+          materialId={m.id}
+          materialName={m.name}
+          page={pageSheet}
+          onClose={() => setPageSheet(null)}
+          onChanged={refresh}
+        />
+      )}
+
       {/* 资料 AI 问答 */}
       {m.status === 'ready' && m.pages.some((p) => p.text) && (
         <div className="mt-3 border-t border-zinc-100 pt-3 dark:border-zinc-800">
@@ -503,10 +518,19 @@ function MaterialDetail({
           <summary className="cursor-pointer text-[11px] text-zinc-400">查看解析出的 {m.pages.length} 页文本</summary>
           <div className="mt-2 max-h-52 space-y-2 overflow-y-auto">
             {m.pages.map((p) => (
-              <p key={p.label} className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
-                <span className="mr-1.5 font-mono text-[10px] text-zinc-400">{p.label}</span>
+              <button
+                key={p.label}
+                data-testid="mat-page"
+                onClick={() => setPageSheet(p)}
+                className={`block w-full rounded-lg px-2 py-1.5 text-left text-xs leading-relaxed active:bg-zinc-100 dark:active:bg-zinc-800 ${
+                  p.marked
+                    ? 'border border-amber-400/60 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300'
+                    : 'text-zinc-500 hover:bg-zinc-50 dark:text-zinc-400 dark:hover:bg-zinc-800/60'
+                }`}
+              >
+                <span className="mr-1.5 font-mono text-[10px] text-zinc-400">{p.marked ? '🚩 ' : ''}{p.label}</span>
                 {p.text || (p.needOcr ? '（图片页：分析时将自动视觉识别）' : '（无文字）')}
-              </p>
+              </button>
             ))}
           </div>
         </details>

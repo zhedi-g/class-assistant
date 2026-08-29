@@ -107,6 +107,23 @@ try {
   check('资料问答生成并显示在问答区', true)
   await page.screenshot({ path: 'shots/17-资料-预习包.png' })
 
+  // ── 页面级操作面板：点页文字 → 解析/标记 ──
+  await page.locator('summary').first().click() // 展开「逐页文本」抽屉
+  await page.waitForSelector('[data-testid="mat-page"]', { timeout: 3000 })
+  await page.getByTestId('mat-page').first().click()
+  await page.waitForSelector('[data-testid="page-sheet"]', { timeout: 3000 })
+  check('点页文字弹出操作面板', true)
+  await page.getByTestId('act-page-parse').click()
+  await page.waitForSelector('[data-testid="page-answer"]', { timeout: 15000 })
+  const pAns = (await page.locator('[data-testid="page-answer"]').last().textContent()) || ''
+  check('「解析本段」流式回答生成', pAns.includes('演示回答'), pAns.slice(0, 22))
+  await page.getByTestId('act-page-mark').click()
+  await page.waitForSelector('text=已标记为重点段落', { timeout: 3000 })
+  check('段落重点标记生效（分析时优先参考）', true)
+  await page.screenshot({ path: 'shots/17-资料-预习包.png' })
+  await page.getByTestId('page-close').click()
+  await page.waitForTimeout(300)
+
   // ── 术语回写热词 ──
   await page.getByTestId('merge-terms').click()
   await page.waitForSelector('[data-testid="toast"]', { timeout: 3000 })
@@ -126,6 +143,11 @@ try {
   await page.getByTestId('material-toggle').first().click()
   await page.waitForSelector('[data-testid="analysis-result"]', { timeout: 5000 })
   check('刷新后分析结果仍在（持久化）', ((await page.getByTestId('analysis-result').textContent()) || '').includes('提纲'))
+  // 展开逐页文本，验证段落重点标记持久化
+  await page.locator('summary').first().click()
+  await page.waitForSelector('[data-testid="mat-page"]', { timeout: 3000 })
+  const markedVisible = ((await page.locator('body').textContent()) || '').includes('🚩')
+  check('刷新后页面重点标记仍在（持久化）', markedVisible)
 } catch (e) {
   check('测试流程无异常', false, e.message)
   await page.screenshot({ path: 'shots/93-异常.png' }).catch(() => {})

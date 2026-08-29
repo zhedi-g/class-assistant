@@ -105,6 +105,8 @@ export function parseAnalysisJson(raw: string): Record<string, unknown> {
 const ANTI_HALLUCINATION =
   '硬性要求：所有结论必须来自给定的材料与转写原文；不要编造材料中未出现的数字、年份、人名、页码；不确定的表述用"大致/疑似"并标注。'
 
+const STAR_NOTE = '（页标签带 ⭐ 的是学生手动标记的重点内容，分析时优先围绕它们展开）\n'
+
 function reviewPrompt(matName: string, matText: string, lessonParts: string[]): string {
   return (
     '你是学生的学习分析师。下面是一份学习资料和若干节课的课堂转写，请联合分析。\n' +
@@ -112,7 +114,7 @@ function reviewPrompt(matName: string, matText: string, lessonParts: string[]): 
     '{"outline":["资料提纲要点",…5~8条],"terms":["核心术语",…8~15个],' +
     '"compare":{"inMaterialOnly":["资料有但课堂未细讲",…],"emphasizedInClass":["课堂反复强调但资料简略",…],"differs":["两者表述不同之处",…]},' +
     '"reviewPlan":["复习建议（按优先级，具体可执行）",…3~6条],"examFocus":["预测考点及依据（如：课堂重复3次）",…3~6条],"summary":"一句话联合结论"}\n' +
-    `【资料：${matName}】\n${matText}\n` +
+    `【资料：${matName}】\n${matText}\n${STAR_NOTE}` +
     lessonParts.join('\n') +
     '\n' +
     ANTI_HALLUCINATION
@@ -126,7 +128,7 @@ function previewPrompt(matName: string, matText: string): string {
     '{"outline":["内容提纲",…5~8条],"terms":["核心术语",…8~15个],' +
     '"listenQuestions":["带着这些问题去听课",…3~5个],"hardPoints":["难点预警（预测哪里会听不懂）",…2~4条],' +
     '"reviewPlan":["预习行动建议（具体可执行）",…3~5条],"summary":"一句话概括这份资料讲什么"}\n' +
-    `【资料：${matName}】\n${matText}\n` +
+    `【资料：${matName}】\n${matText}\n${STAR_NOTE}` +
     ANTI_HALLUCINATION
   )
 }

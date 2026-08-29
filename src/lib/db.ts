@@ -22,6 +22,8 @@ export interface MaterialPage {
   needOcr?: boolean
   /** 该页内嵌图片的 blob（needOcr 页用） */
   imageBlobs?: Blob[]
+  /** 学生手动标记的重点页/段（M5.2，分析时优先参考） */
+  marked?: boolean
 }
 
 export type MaterialKind = 'pptx' | 'pdf' | 'text' | 'image'

@@ -1,7 +1,8 @@
 // 资料解析器：pptx / pdf / 文本 / 图片 → 统一的 MaterialPage[]。
 // 全部在浏览器本地完成，文件内容不出设备；仅文本在用户点"分析"时送 AI。
 import JSZip from 'jszip'
-import type { MaterialKind, MaterialPage } from './db'
+import type { MaterialKind, MaterialPage, QaPair } from './db'
+import { db } from './db'
 
 export interface ParseProgress {
   (done: number, total: number, note?: string): void
@@ -141,4 +142,20 @@ export async function parseMaterial(
     case 'image':
       return parseImage(file)
   }
+}
+
+/** 追加资料问答（读改写，避免闭包旧值覆盖） */
+export async function addMaterialQa(id: number, pair: QaPair): Promise<void> {
+  const rec = await db.materials.get(id)
+  if (!rec) return
+  await db.materials.update(id, { qas: [...(rec.qas ?? []), pair] })
+}
+
+/** 切换某页/段的重点标记，返回新状态；资料不存在返回 null */
+export async function togglePageMark(id: number, label: string): Promise<boolean | null> {
+  const rec = await db.materials.get(id)
+  if (!rec) return null
+  const pages = rec.pages.map((p) => (p.label === label ? { ...p, marked: !p.marked } : p))
+  await db.materials.update(id, { pages })
+  return pages.find((p) => p.label === label)?.marked ?? null
 }
