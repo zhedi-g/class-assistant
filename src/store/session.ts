@@ -11,9 +11,10 @@ import { unlockVibration, vibrateAlert, vibrateLight } from '../lib/vibrate'
 
 /** 主动回答的系统提示：价值判定 + 回答二合一；不值得答返回 [跳过] */
 const PROACTIVE_SYSTEM =
-  '你是课堂学习助手。给你的一句话来自课堂实时转写，可能是老师或同学的提问。请先判断它是否值得回答：' +
-  '如果是课堂事务（点名、交作业、翻书等）、无实质内容的碎句、自问自答的反问、与学习无关的话，只输出「[跳过]」；' +
-  '如果是值得回答的知识类问题，直接给出简洁准确的中文回答（2~4 句，可含公式），不要任何前缀和解释。'
+  '你是学生的课堂学习助手。给你的一句话来自课堂实时转写，可能是老师或同学说的话。请先判断是否值得为学生回答：\n' +
+  '【值得回答】任何知识类提问，包括：学生提出的问题；老师向学生抛出的问题（如"哪位同学讲讲X""谁能说说X"——老师抛出的问题往往是重点，请针对 X 本身作答）；表述模糊但能提炼出明确知识主题的提问（先在心里提炼主题，再围绕主题作答）。\n' +
+  '【跳过】只输出「[跳过]」四个字：课堂事务（点名、交作业、翻书、维持纪律等）、无实质内容的碎句、与学习无关的闲聊、纯程序性话语（如"下面进入正题"）。\n' +
+  '【回答要求】中文 2~5 句，可分点；发展趋势/对比类问题用分点概括；不要编造不确定的数字、年份、人名——不确定就用"大致/约"等表述或直接说明。'
 
 export interface AskMsg {
   role: 'user' | 'assistant'
@@ -48,6 +49,10 @@ interface SessionState {
   mark: () => void
   setBehind: (b: boolean) => void
   sendAsk: (question: string, segText?: string) => Promise<void>
+  /** 标记/取消标记指定句子（句子操作面板用） */
+  toggleMark: (id: string) => void
+  /** 轻提示（复制成功等） */
+  notify: (msg: string) => void
   clearAskNotice: () => void
 }
 
@@ -274,15 +279,17 @@ export const useSession = create<SessionState>()((set, get) => ({
                 onDelta: append,
               })
                 .then(() => {
-                  const ans = get().askMsgs[get().askMsgs.length - 1]?.content ?? ''
+                  let ans = get().askMsgs[get().askMsgs.length - 1]?.content ?? ''
                   if (ans.includes('[跳过]')) {
                     // 非知识类提问：整对移除，不打扰
                     set((s2) => ({ askMsgs: s2.askMsgs.slice(0, -2) }))
                   } else {
+                    // 模型偶尔会把判定标记带进正文，剥离
+                    ans = ans.replace(/^【[^】]{1,8}】\s*/, '')
                     set((s2) => {
                       const copy = [...s2.askMsgs]
                       const last = copy[copy.length - 1]
-                      copy[copy.length - 1] = { ...last, meta: '自动回答 · 检测到课堂提问' }
+                      copy[copy.length - 1] = { ...last, content: ans, meta: '自动回答 · 检测到课堂提问' }
                       return { askMsgs: copy, askNotice: { q: t } }
                     })
                     vibrateLight()
@@ -384,6 +391,17 @@ export const useSession = create<SessionState>()((set, get) => ({
       showToast('下一句将自动标记为重点')
     }
   },
+
+  toggleMark: (id) => {
+    const target = get().segments.find((x) => x.id === id)
+    if (!target) return
+    set((st) => ({
+      segments: st.segments.map((x) => (x.id === id ? { ...x, marked: !x.marked } : x)),
+    }))
+    showToast(!target.marked ? '已标记为重点' : '已取消标记')
+  },
+
+  notify: (msg) => showToast(msg),
 
   sendAsk: async (question, segText) => {
     const q = question.trim()

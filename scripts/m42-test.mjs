@@ -21,7 +21,7 @@ const ctx = await browser.newContext({
   isMobile: true,
   hasTouch: true,
   locale: 'zh-CN',
-  permissions: ['microphone'],
+  permissions: ['microphone', 'clipboard-write', 'clipboard-read'],
   ignoreHTTPSErrors: true,
 })
 const page = await ctx.newPage()
@@ -37,27 +37,40 @@ try {
   const banner = (await page.getByTestId('ask-notice').textContent()) || ''
   check('检测到课堂提问并生成回答（横幅）', banner.includes('深度求索') && banner.includes('已生成回答'), banner.trim().slice(0, 34))
 
-  // ── 陈述句不应触发：等全部 4 段说完 ──
-  await page.waitForFunction(() => document.querySelectorAll('[data-testid="segment"]').length >= 4, {
-    timeout: 20000,
-  })
-  await page.waitForTimeout(2500) // 等可能的异步判定
-
-  // ── 字幕句带 🤔提问 标签 ──
-  const segTagged = await page.evaluate(() =>
-    [...document.querySelectorAll('[data-testid="segment"]')].some((el) => el.textContent?.includes('🤔提问')),
-  )
-  check('提问句字幕带 🤔提问 标签', segTagged)
-
-  // ── 点横幅查看回答（打开面板后计数：仅提问那 1 对，陈述句未被误答）──
+  // ── 点横幅查看回答（问答视图）──
   await page.getByTestId('ask-notice').click()
   await page.waitForSelector('[data-testid="ask-sheet"]', { timeout: 3000 })
-  const answerCount = await page.locator('[data-testid="ask-answer"]').count()
-  check('仅课堂提问被回答（陈述句零误答）', answerCount === 1, `当前 ${answerCount} 对`)
   const lastAnswer = (await page.locator('[data-testid="ask-answer"]').last().textContent()) || ''
   check('点横幅打开问答面板且回答在列', lastAnswer.includes('演示回答'), lastAnswer.slice(0, 22))
   const userMsg = ((await page.getByTestId('ask-body').textContent()) || '').includes('（课堂提问）深度求索是哪家公司')
   check('问答面板标记「自动捕获」来源', userMsg)
+  await page.getByTestId('ask-close').click()
+  await page.waitForTimeout(300)
+
+  // ── 点提问句 → 句子操作面板（标记/解析/回答此问/复制）──
+  await page.locator('[data-testid="segment"]').first().click()
+  await page.waitForSelector('[data-testid="seg-actions"]', { timeout: 3000 })
+  check('点句子出现操作面板（标记/解析/回答/复制）', await page.getByTestId('act-parse').isVisible())
+  check('提问句显示「回答此问」按钮', await page.getByTestId('act-answer-q').isVisible())
+
+  // 打开面板时清点：此前只有提问那 1 对被回答（陈述句零误答）
+  const pairCount = await page.locator('[data-testid="ask-answer"]').count()
+  check('仅课堂提问被主动回答（陈述句零误答）', pairCount === 1, `当前 ${pairCount} 对`)
+
+  await page.getByTestId('act-parse').click()
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="ask-answer"]').length >= 2, {
+    timeout: 15000,
+  })
+  check('「解析本句」生成解析回答', true)
+
+  await page.getByTestId('act-copy').click()
+  await page.waitForSelector('[data-testid="toast"]', { timeout: 3000 })
+  const copyToast = (await page.getByTestId('toast').textContent()) || ''
+  check('「复制原文」成功提示', copyToast.includes('已复制'), copyToast.trim())
+
+  await page.getByTestId('act-mark').click()
+  await page.waitForSelector('text=已标记为重点', { timeout: 3000 })
+  check('「标记重点」toggle 生效', true)
   await page.screenshot({ path: 'shots/14-主动回答面板.png' })
   await page.getByTestId('ask-close').click()
   await page.waitForTimeout(300)
