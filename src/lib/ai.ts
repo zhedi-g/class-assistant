@@ -7,6 +7,8 @@ export interface AskOptions {
   question: string
   /** 附带的课堂上下文（选中句、最近字幕等） */
   context?: string
+  /** 覆盖默认系统提示（主动回答管线需要"价值判定+回答"二合一提示） */
+  system?: string
   onDelta: (delta: string) => void
 }
 
@@ -55,7 +57,7 @@ export async function askAI(opts: AskOptions): Promise<void> {
     body: JSON.stringify({
       model: cfg.model,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: opts.system ?? SYSTEM_PROMPT },
         { role: 'user', content: userContent },
       ],
       max_tokens: 800,

@@ -3,10 +3,17 @@ import { createAsrSession, type IAsrSession } from '../lib/iflytek'
 import { startCapture, type Capture } from '../lib/audio'
 import { createCorrector, type Corrector } from '../lib/correction'
 import { askAI } from '../lib/ai'
+import { detectQuestion, isDuplicateQuestion } from '../lib/question'
 import { db } from '../lib/db'
 import { useSettings } from './settings'
 import { loadSecrets } from '../lib/secretStore'
-import { unlockVibration, vibrateAlert } from '../lib/vibrate'
+import { unlockVibration, vibrateAlert, vibrateLight } from '../lib/vibrate'
+
+/** 主动回答的系统提示：价值判定 + 回答二合一；不值得答返回 [跳过] */
+const PROACTIVE_SYSTEM =
+  '你是课堂学习助手。给你的一句话来自课堂实时转写，可能是老师或同学的提问。请先判断它是否值得回答：' +
+  '如果是课堂事务（点名、交作业、翻书等）、无实质内容的碎句、自问自答的反问、与学习无关的话，只输出「[跳过]」；' +
+  '如果是值得回答的知识类问题，直接给出简洁准确的中文回答（2~4 句，可含公式），不要任何前缀和解释。'
 
 export interface AskMsg {
   role: 'user' | 'assistant'
@@ -17,7 +24,7 @@ export interface AskMsg {
 interface SessionState {
   status: 'idle' | 'recording'
   startedAt: number | null
-  segments: { id: string; t: number; text: string; raw?: string; marked: boolean; matched?: string }[]
+  segments: { id: string; t: number; text: string; raw?: string; marked: boolean; matched?: string; q?: boolean }[]
   interim: string
   conn: 'connecting' | 'open' | 'reconnecting'
   reconnects: number
@@ -28,6 +35,8 @@ interface SessionState {
   /** 课中问答记录（弹层历史，下课随记录存库） */
   askMsgs: AskMsg[]
   askBusy: boolean
+  /** 检测到课堂提问且已生成回答，等待学生查看 */
+  askNotice: { q: string } | null
   /** 本次会话命中的提醒关键词 */
   alertHits: { word: string; t: number }[]
   alertBanner: { word: string } | null
@@ -39,6 +48,7 @@ interface SessionState {
   mark: () => void
   setBehind: (b: boolean) => void
   sendAsk: (question: string, segText?: string) => Promise<void>
+  clearAskNotice: () => void
 }
 
 let asr: IAsrSession | null = null
@@ -49,6 +59,7 @@ let pendingHitWord: string | null = null
 let alertWordsList: string[] = []
 let segHitWords = new Set<string>()
 let lastAlertAt = 0
+let proactiveBusy = false
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 let bannerTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -106,6 +117,7 @@ export const useSession = create<SessionState>()((set, get) => ({
   aiFix: false,
   askMsgs: [],
   askBusy: false,
+  askNotice: null,
   alertHits: [],
   alertBanner: null,
   errMsg: null,
@@ -157,6 +169,7 @@ export const useSession = create<SessionState>()((set, get) => ({
       aiFix: !!corrector,
       askMsgs: [],
       askBusy: false,
+      askNotice: null,
       alertHits: [],
       alertBanner: null,
       errMsg: null,
@@ -191,6 +204,8 @@ export const useSession = create<SessionState>()((set, get) => ({
           pendingHitWord = null
           segHitWords = new Set()
           const segId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+          // 是否为课堂提问（本地规则预筛，价值终判在大模型）
+          const det = detectQuestion(t)
           set((st) => ({
             segments: [
               ...st.segments,
@@ -200,6 +215,7 @@ export const useSession = create<SessionState>()((set, get) => ({
                 text: t,
                 marked,
                 matched: hitWord ?? undefined,
+                q: det.question || undefined,
               },
             ],
             interim: '',
@@ -219,6 +235,68 @@ export const useSession = create<SessionState>()((set, get) => ({
                 ),
               }))
             })
+          }
+
+          // 课堂提问主动回答：规则预筛 → 大模型价值判定+回答二合一 → 值得答才展示
+          if (!get().askBusy && !proactiveBusy && useSettings.getState().proactive && det.question) {
+            const recentQs = get()
+              .askMsgs.filter((m) => m.role === 'user')
+              .map((m) => m.content.replace(/^（课堂提问）/, ''))
+              .slice(-4)
+            if (!isDuplicateQuestion(t, recentQs)) {
+              proactiveBusy = true
+              set((s2) => ({
+                askMsgs: [
+                  ...s2.askMsgs,
+                  { role: 'user' as const, content: `（课堂提问）${t}`, meta: '自动捕获' },
+                  { role: 'assistant' as const, content: '' },
+                ],
+                askBusy: true,
+              }))
+              const append = (delta: string) => {
+                set((s2) => {
+                  const copy = [...s2.askMsgs]
+                  const last = copy[copy.length - 1]
+                  copy[copy.length - 1] = { ...last, content: last.content + delta }
+                  return { askMsgs: copy }
+                })
+              }
+              const recentCtx = get()
+                .segments.filter((x) => x.id !== segId)
+                .slice(-5)
+                .map((x) => x.text)
+                .join(' / ')
+                .slice(-2000)
+              askAI({
+                question: t,
+                context: recentCtx ? `【最近课堂字幕】${recentCtx}` : '',
+                system: PROACTIVE_SYSTEM,
+                onDelta: append,
+              })
+                .then(() => {
+                  const ans = get().askMsgs[get().askMsgs.length - 1]?.content ?? ''
+                  if (ans.includes('[跳过]')) {
+                    // 非知识类提问：整对移除，不打扰
+                    set((s2) => ({ askMsgs: s2.askMsgs.slice(0, -2) }))
+                  } else {
+                    set((s2) => {
+                      const copy = [...s2.askMsgs]
+                      const last = copy[copy.length - 1]
+                      copy[copy.length - 1] = { ...last, meta: '自动回答 · 检测到课堂提问' }
+                      return { askMsgs: copy, askNotice: { q: t } }
+                    })
+                    vibrateLight()
+                  }
+                })
+                .catch(() => {
+                  // 生成失败：静默移除，不影响正常课堂流程
+                  set((s2) => ({ askMsgs: s2.askMsgs.slice(0, -2) }))
+                })
+                .finally(() => {
+                  proactiveBusy = false
+                  set({ askBusy: false })
+                })
+            }
           }
         },
         onError: (msg, fatal) => {
@@ -272,7 +350,7 @@ export const useSession = create<SessionState>()((set, get) => ({
       const qas: { q: string; a: string; ts: number }[] = []
       let pendQ: string | null = null
       for (const m of st.askMsgs) {
-        if (m.role === 'user') pendQ = m.content
+        if (m.role === 'user') pendQ = m.content.replace(/^（课堂提问）/, '')
         else if (pendQ !== null) {
           qas.push({ q: pendQ, a: m.content, ts: Date.now() })
           pendQ = null
@@ -348,4 +426,5 @@ export const useSession = create<SessionState>()((set, get) => ({
   },
 
   setBehind: (b) => set({ behindApp: b }),
+  clearAskNotice: () => set({ askNotice: null }),
 }))

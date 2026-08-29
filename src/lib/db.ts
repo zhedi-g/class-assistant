@@ -9,6 +9,8 @@ export interface Segment {
   marked: boolean
   /** 命中的提醒关键词（M3） */
   matched?: string
+  /** 课堂提问句（M4.2 自动检测） */
+  q?: boolean
 }
 
 export interface QaPair {

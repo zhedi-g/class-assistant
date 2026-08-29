@@ -18,3 +18,10 @@ export function vibrateAlert(): void {
     navigator.vibrate?.([200, 80, 200, 80, 200])
   } catch {}
 }
+
+/** 轻提示（如检测到课堂提问）：单次短震 */
+export function vibrateLight(): void {
+  try {
+    navigator.vibrate?.(80)
+  } catch {}
+}

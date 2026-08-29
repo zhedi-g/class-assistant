@@ -194,6 +194,27 @@ export default function SettingsPage() {
             <option value="deepseek">DeepSeek</option>
           </select>
         </Field>
+        <Field label="自动回答课堂提问">
+          <div className="flex gap-2">
+            {([true, false] as const).map((v) => (
+              <button
+                key={String(v)}
+                data-testid={v ? 'proactive-on' : 'proactive-off'}
+                onClick={() => s.setSettings({ proactive: v })}
+                className={`flex-1 rounded-xl border px-3 py-2 text-sm ${
+                  s.proactive === v
+                    ? 'border-blue-500 text-blue-500'
+                    : 'border-zinc-300 text-zinc-500 dark:border-zinc-700'
+                }`}
+              >
+                {v ? '开启' : '关闭'}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <p className="-mt-1 text-[11px] leading-relaxed text-zinc-400 dark:text-zinc-600">
+          开启后：转写中检测到值得回答的知识类提问时自动生成回答并提醒（课堂事务与无实质内容的问句自动跳过）。
+        </p>
         <Field label="主题">
           <div className="flex gap-2">
             {(['dark', 'light'] as const).map((t) => (

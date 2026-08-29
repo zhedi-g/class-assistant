@@ -158,6 +158,19 @@ function RecordingView({
         </div>
       )}
 
+      {s.askNotice && (
+        <button
+          data-testid="ask-notice"
+          onClick={() => {
+            s.clearAskNotice()
+            onOpenAsk(null)
+          }}
+          className="w-full rounded-xl border border-violet-400/70 bg-violet-50 px-3 py-2.5 text-left text-sm font-medium text-violet-700 dark:border-violet-500/40 dark:bg-violet-500/10 dark:text-violet-300"
+        >
+          🤔 检测到课堂提问「{s.askNotice.q.slice(0, 18)}」— AI 已生成回答，点击查看
+        </button>
+      )}
+
       <div className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-900">
         <span className="flex items-center gap-1.5 text-zinc-500">
           <span data-testid="conn-dot" className={`h-2 w-2 rounded-full ${connColor}`} />
@@ -203,6 +216,11 @@ function RecordingView({
                   : 'text-[15px] leading-relaxed text-zinc-700 dark:text-zinc-300')
             }
           >
+            {seg.q && (
+              <span className="mr-1.5 rounded bg-violet-200/70 px-1.5 py-0.5 text-[11px] font-semibold text-violet-800 dark:bg-violet-500/25 dark:text-violet-300">
+                🤔提问
+              </span>
+            )}
             {seg.matched && (
               <span className="mr-1.5 rounded bg-amber-200/70 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-500/25 dark:text-amber-300">
                 🔔{seg.matched}
@@ -245,6 +263,10 @@ function RecordingView({
         className="w-full rounded-2xl border border-blue-500/60 py-3 text-sm font-medium text-blue-500 active:scale-[0.99]"
       >
         💬 问 AI（查词 / 提问，自动带课堂内容）
+        {(() => {
+          const n = s.askMsgs.filter((m) => m.role === 'user').length
+          return n > 0 ? ` · 已有 ${n} 条` : ''
+        })()}
       </button>
     </div>
   )

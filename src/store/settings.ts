@@ -25,6 +25,8 @@ interface SettingsState {
   hotwords: string
   /** 提醒关键词，每行一个（命中即震动+标记） */
   alertWords: string
+  /** 自动检测课堂提问并生成 AI 回答 */
+  proactive: boolean
   theme: 'dark' | 'light'
   setSettings: (patch: Partial<Omit<SettingsState, 'setSettings'>>) => void
 }
@@ -40,6 +42,7 @@ export const useSettings = create<SettingsState>()(
       iflytekAppId: '',
       hotwords: '',
       alertWords: DEFAULT_ALERT_WORDS,
+      proactive: true,
       theme: 'dark',
       setSettings: (patch) => set(patch),
     }),
