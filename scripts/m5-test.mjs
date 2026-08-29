@@ -33,39 +33,78 @@ try {
   await page.waitForSelector('[data-testid="upload-btn"]', { timeout: 5000 })
   check('「资料」Tab 可进入，上传按钮可见', true)
 
-  // ── 上传 txt + pdf（真实浏览器 pdf.js worker 路径）──
+  // ── 上传 txt + pdf + png（覆盖：文本解析 / 真实 pdf worker / 图片 OCR 通道）──
   const PDF_SAMPLE = new URL('../fixtures/sample.pdf', import.meta.url)
-  await page.setInputFiles('[data-testid="mat-input"]', [fileURLToPath(SAMPLE_TXT), fileURLToPath(PDF_SAMPLE)])
+  const PNG_SAMPLE = new URL('../fixtures/sample.png', import.meta.url)
+  await page.setInputFiles('[data-testid="mat-input"]', [
+    fileURLToPath(SAMPLE_TXT),
+    fileURLToPath(PDF_SAMPLE),
+    fileURLToPath(PNG_SAMPLE),
+  ])
   await page.waitForSelector('[data-testid="material-card"]', { timeout: 8000 })
-  await page.waitForTimeout(600) // 等两个文件都解析完
+  await page.waitForTimeout(800) // 等三个文件都解析完
   const cardCount = await page.getByTestId('material-card').count()
-  check('txt + pdf 两个资料卡均出现', cardCount === 2, `实际 ${cardCount} 张卡`)
+  check('txt + pdf + png 三个资料卡均出现', cardCount === 3, `实际 ${cardCount} 张卡`)
   const allText = (await page.locator('body').textContent()) || ''
-  check('PDF 真实解析成功（无 worker 报错且文字层可读）', allText.includes('Kinetic Energy Theorem') && !allText.includes('解析失败'), '')
+  // 展开第二张卡（sample.pdf）的逐页文本以验证文字层
+  const pdfToggle = page.getByTestId('material-toggle').nth(1)
+  await pdfToggle.click()
+  await page.waitForTimeout(300)
+  const detailBtns = await page.getByTestId('material-card').nth(1).locator('summary').count()
+  if (detailBtns > 0) await page.getByTestId('material-card').nth(1).locator('summary').first().click()
+  const allText2 = (await page.locator('body').textContent()) || ''
+  check(
+    'PDF 真实解析成功（无 worker 报错且文字层可读）',
+    allText2.includes('Kinetic Energy Theorem') && !allText2.includes('解析失败'),
+    '',
+  )
+  // 收起 pdf 卡，改打开 png 卡（列表最新在前）→ 后续分析走 OCR 演示
+  await pdfToggle.click()
+  await page.waitForTimeout(200)
+  await page.getByTestId('material-toggle').first().click()
+  await page.waitForSelector('[data-testid="analyze-btn"]', { timeout: 3000 })
 
-  // ── 展开详情（上传后已自动展开则不重复点）──
+  // ── 详情展开（上传后最后一张卡=png 已自动展开，分析会先走 OCR 演示）──
   const alreadyOpen = await page
     .locator('[data-testid="analyze-btn"]')
     .isVisible()
     .catch(() => false)
   if (!alreadyOpen) {
-    await page.getByTestId('material-toggle').click()
+    await page.getByTestId('material-toggle').last().click()
     await page.waitForSelector('[data-testid="analyze-btn"]', { timeout: 3000 })
   }
   check('详情展开，分析入口可见', true)
   await page.getByTestId('analyze-btn').click()
-  // 无相关记录时应直接进入分析（预览模式）
+  // png 卡先走 OCR（Mock 演示文本），随后进入分析
+  const analyzing = await page
+    .waitForSelector('[data-testid="analyzing"]', { timeout: 5000 })
+    .then(() => true)
+    .catch(() => false)
+  check('分析中状态提示出现（含阶段/字数进度）', analyzing)
   const resultAppear = await page
-    .waitForSelector('[data-testid="analysis-result"]', { timeout: 15000 })
+    .waitForSelector('[data-testid="analysis-result"]', { timeout: 20000 })
     .then(() => true)
     .catch(() => false)
   check('预习模式分析完成（结果卡片出现）', resultAppear)
+  await page.waitForTimeout(400)
+  const bodyAfter = (await page.locator('body').textContent()) || ''
+  check('图片页 OCR 已回填（演示识别文本）', bodyAfter.includes('演示识别'))
 
   // ── 结果卡片内容 ──
   const result = (await page.getByTestId('analysis-result').textContent()) || ''
   check('结果含提纲', result.includes('提纲'))
   check('结果含核心术语', result.includes('核心术语'))
   check('结果含预习行动建议', result.includes('预习'))
+  await page.screenshot({ path: 'shots/17-资料-预习包.png' })
+
+  // ── 资料 AI 问答（流式 + 持久化）──
+  await page.getByTestId('mat-qa-input').fill('这份资料的重点是什么')
+  await page.getByTestId('mat-qa-send').click()
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="mat-qas"]')?.textContent?.includes('这份资料的重点是什么'),
+    { timeout: 20000 },
+  )
+  check('资料问答生成并显示在问答区', true)
   await page.screenshot({ path: 'shots/17-资料-预习包.png' })
 
   // ── 术语回写热词 ──

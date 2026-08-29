@@ -1,9 +1,10 @@
-// 资料库页（M5-D3）：上传 → 本地解析 → 关联课堂 → AI 联合分析 → 结构化结果卡片 + 术语回写热词。
+// 资料库页（M5）：上传 → 本地解析 → 关联课堂 → AI 联合分析 → 结果卡片 + 术语回写 + 资料 AI 问答。
 import { useEffect, useRef, useState } from 'react'
-import { db, type LessonRecord, type MaterialRecord } from '../lib/db'
+import { db, type LessonRecord, type MaterialRecord, type QaPair } from '../lib/db'
 import { detectKind, parseMaterial } from '../lib/material'
-import { analyzeMaterial, matchMaterialToLessons, mergeHotwords, type MatchCandidate } from '../lib/analysis'
+import { analyzeMaterial, matchMaterialToLessons, mergeHotwords, pagesText, type MatchCandidate } from '../lib/analysis'
 import { ocrImage } from '../lib/ocr'
+import { askAI } from '../lib/ai'
 import { useSettings } from '../store/settings'
 import { useSession } from '../store/session'
 
@@ -15,6 +16,18 @@ const KIND_META: Record<string, { icon: string; label: string }> = {
 }
 
 type Step = 'idle' | 'matching' | 'analyzing'
+
+/** 并发池：最多 limit 个任务同时跑 */
+async function runPool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let idx = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (idx < items.length) {
+      const item = items[idx++]
+      await fn(item)
+    }
+  })
+  await Promise.all(workers)
+}
 
 export default function MaterialsPage() {
   const notify = useSession((s) => s.notify)
@@ -201,8 +214,95 @@ function MaterialDetail({
   const [analyzing, setAnalyzing] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [ocrNote, setOcrNote] = useState<string | null>(null)
-  const setHotwords = useSettings((s) => s.setSettings)
+  const [qaInput, setQaInput] = useState('')
+  const [qaStream, setQaStream] = useState('')
+  const [qaBusy, setQaBusy] = useState(false)
+  const setSettings = useSettings((s) => s.setSettings)
   const hotwords = useSettings((s) => s.hotwords)
+
+  const refresh = () => {
+    db.materials
+      .orderBy('createdAt')
+      .reverse()
+      .toArray()
+      .then((all) => {
+        const cur = all.find((x) => x.id === m.id)
+        if (cur) Object.assign(m, cur)
+        onChanged()
+      })
+  }
+
+  /** 视觉识别 needOcr 页：并发 3、失败不阻塞、可重试 */
+  async function runOcr(pages: MaterialRecord['pages']): Promise<{ ok: number; fail: number }> {
+    const limit = Math.min(useSettings.getState().ocrLimit || 20, 50)
+    const targets = pages.filter((p) => p.needOcr && p.imageBlobs?.length).slice(0, limit)
+    if (!targets.length) return { ok: 0, fail: 0 }
+    let done = 0
+    let fail = 0
+    await runPool(targets, 3, async (p) => {
+      try {
+        const text = await ocrImage(p.imageBlobs![0])
+        p.text = text
+        p.needOcr = false
+        p.imageBlobs = undefined
+      } catch {
+        fail++
+      }
+      done++
+      setAnalyzing(`视觉识别图片页 ${done}/${targets.length}…`)
+    })
+    return { ok: done - fail, fail }
+  }
+
+  async function retryOcr() {
+    setError(null)
+    setAnalyzing('视觉识别图片页…')
+    const { ok, fail } = await runOcr(m.pages)
+    await db.materials.update(m.id!, { pages: m.pages })
+    setAnalyzing(null)
+    setOcrNote(`识别完成：成功 ${ok} 页${fail ? `，失败 ${fail} 页（可再次重试）` : ''}`)
+    refresh()
+  }
+
+  async function runAnalysis(lessonIds: number[], matchNote: string) {
+    setStep('analyzing')
+    setError(null)
+    setAnalyzing('准备分析…')
+    try {
+      // 图片页先视觉识别（并发 3，失败不阻塞）
+      if (m.pages.some((p) => p.needOcr && p.imageBlobs?.length)) {
+        setAnalyzing('视觉识别图片页…')
+        const { ok, fail } = await runOcr(m.pages)
+        await db.materials.update(m.id!, { pages: m.pages })
+        if (ok + fail > 0) setOcrNote(`图片页识别：成功 ${ok} 页${fail ? `，失败 ${fail} 页（可重试）` : ''}`)
+      }
+      const lessons = lessonIds.map((id) => lessonsCache[id]).filter(Boolean)
+      const analysis = await analyzeMaterial({ name: m.name, pages: m.pages }, lessons, lessonIds.length ? 'review' : 'preview', matchNote, {
+        onProgress: (note) => setAnalyzing(note),
+        onRaw: (chars) => setAnalyzing(`AI 分析中…已生成 ${chars} 字`),
+      })
+      await db.materials.update(m.id!, { analysis })
+      onChanged()
+      notify(analysis.mode === 'review' ? '联合分析完成' : '预习包已生成')
+      setStep('idle')
+    } catch (e) {
+      setError((e as Error).message)
+      setStep('idle')
+    } finally {
+      setAnalyzing(null)
+    }
+  }
+
+  function reanalyze() {
+    if (!confirm('重新分析将覆盖当前结果，继续？')) return
+    void (async () => {
+      await db.materials.update(m.id!, { analysis: undefined })
+      m.analysis = undefined
+      onChanged()
+      setStep('idle')
+      await startMatching()
+    })()
+  }
 
   async function startMatching() {
     setError(null)
@@ -220,74 +320,83 @@ function MaterialDetail({
     setCandidates(cands)
   }
 
-  async function runAnalysis(lessonIds: number[], matchNote: string) {
-    setStep('analyzing')
-    setAnalyzing('准备分析…')
-    try {
-      let pages = m.pages
-      const ocrPages = pages.filter((p) => p.needOcr && p.imageBlobs?.length)
-      if (ocrPages.length > 0) {
-        const max = Math.min(5, ocrPages.length)
-        for (let i = 0; i < max; i++) {
-          const p = ocrPages[i]
-          setAnalyzing(`视觉识别图片页（${i + 1}/${max}）…`)
-          try {
-            const text = await ocrImage(p.imageBlobs![0])
-            p.text = text
-            p.needOcr = false
-            p.imageBlobs = undefined
-          } catch {
-            p.text = p.text || '（图片识别失败）'
-            p.needOcr = false
-          }
-        }
-        setOcrNote(`已识别 ${max} 个图片页`)
-        await db.materials.update(m.id!, { pages })
-      }
-      setAnalyzing('AI 联合分析中（约 10~30 秒）…')
-      const lessons = lessonIds.map((id) => lessonsCache[id]).filter(Boolean)
-      const analysis = await analyzeMaterial({ name: m.name, pages }, lessons, lessonIds.length ? 'review' : 'preview', matchNote)
-      await db.materials.update(m.id!, { analysis })
-      onChanged()
-      notify(analysis.mode === 'review' ? '联合分析完成' : '预习包已生成')
-      setStep('idle')
-    } catch (e) {
-      setError((e as Error).message)
-      setStep('idle')
-    } finally {
-      setAnalyzing(null)
-    }
-  }
-
   async function mergeTerms() {
     if (!m.analysis?.result.terms?.length) return
-    setHotwords({ hotwords: mergeHotwords(hotwords, m.analysis.result.terms) })
+    setSettings({ hotwords: mergeHotwords(hotwords, m.analysis.result.terms) })
     notify(`已合并 ${m.analysis.result.terms.length} 个术语进识别热词`)
+  }
+
+  /** 资料 AI 问答：带资料全文上下文，流式回答，随资料存档 */
+  async function askMaterial(q: string) {
+    const question = q.trim()
+    if (!question || qaBusy) return
+    setQaBusy(true)
+    setQaStream('')
+    let a = ''
+    try {
+      await askAI({
+        question,
+        context: `【资料：${m.name}】${pagesText(m.pages, 6000)}`,
+        onDelta: (d) => {
+          a += d
+          setQaStream(a)
+        },
+      })
+      const pair: QaPair = { q: question, a, ts: Date.now() }
+      await db.materials.update(m.id!, { qas: [...(m.qas ?? []), pair] })
+      m.qas = [...(m.qas ?? []), pair]
+      setQaInput('')
+      setQaStream('')
+      onChanged()
+    } catch (e) {
+      setQaStream('回答失败：' + (e as Error).message)
+    } finally {
+      setQaBusy(false)
+    }
   }
 
   return (
     <div className="border-t border-zinc-100 p-4 dark:border-zinc-800">
-      {/* 状态：解析中/失败 */}
       {m.status === 'parsing' && <p className="text-xs text-zinc-400">解析中…</p>}
       {m.status === 'failed' && <p className="text-xs text-red-500">{m.statusMsg}</p>}
 
-      {/* 已有分析结果 */}
       {m.analysis && <AnalysisView analysis={m.analysis} onMergeTerms={mergeTerms} />}
 
-      {/* 无结果：分析入口/候选确认/分析中 */}
-      {!m.analysis && step === 'idle' && (
-        <button
-          data-testid="analyze-btn"
-          onClick={() => void startMatching()}
-          disabled={m.status !== 'ready'}
-          className="w-full rounded-xl bg-blue-600 py-2.5 text-sm font-medium text-white disabled:opacity-40"
-        >
-          开始分析
-        </button>
+      {/* 操作行：开始分析 / 重新分析 / 重试识别 */}
+      {step === 'idle' && m.status === 'ready' && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {!m.analysis && (
+            <button
+              data-testid="analyze-btn"
+              onClick={() => void startMatching()}
+              className="min-w-0 flex-1 rounded-xl bg-blue-600 py-2.5 text-sm font-medium text-white"
+            >
+              开始分析
+            </button>
+          )}
+          {m.analysis && (
+            <button
+              data-testid="reanalyze-btn"
+              onClick={reanalyze}
+              className="flex-1 rounded-xl border border-blue-500/60 py-2 text-xs text-blue-500"
+            >
+              🔄 重新分析
+            </button>
+          )}
+          {m.pages.some((p) => p.needOcr) && (
+            <button
+              data-testid="retry-ocr"
+              onClick={() => void retryOcr()}
+              className="flex-1 rounded-xl border border-zinc-300 py-2 text-xs text-zinc-500 dark:border-zinc-700"
+            >
+              🖼️ 重试识别 {m.pages.filter((p) => p.needOcr).length} 个图片页
+            </button>
+          )}
+        </div>
       )}
 
       {step === 'matching' && (
-        <div data-testid="match-list" className="space-y-2">
+        <div data-testid="match-list" className="mt-3 space-y-2">
           <p className="text-xs font-semibold text-zinc-500">发现可能相关的课堂记录，请确认（可多选）：</p>
           {candidates.map((c) => (
             <label key={c.lessonId} className="flex items-center gap-2 rounded-xl border border-zinc-200 px-3 py-2 text-xs dark:border-zinc-700">
@@ -343,6 +452,50 @@ function MaterialDetail({
       )}
       {ocrNote && <p className="pt-1 text-[11px] text-zinc-400">{ocrNote}</p>}
       {error && <p className="pt-1 text-xs text-red-500">{error}</p>}
+
+      {/* 资料 AI 问答 */}
+      {m.status === 'ready' && m.pages.some((p) => p.text) && (
+        <div className="mt-3 border-t border-zinc-100 pt-3 dark:border-zinc-800">
+          <p className="mb-2 text-xs font-semibold text-zinc-500">问 AI（自动带整份资料内容）</p>
+          {m.qas && m.qas.length > 0 && (
+            <div data-testid="mat-qas" className="mb-2 space-y-2">
+              {m.qas.map((qa, i) => (
+                <div key={i} className="space-y-1">
+                  <p className="text-right text-xs text-blue-500">Q：{qa.q}</p>
+                  <p className="whitespace-pre-wrap rounded-xl bg-zinc-100 px-2.5 py-1.5 text-xs leading-relaxed dark:bg-zinc-800">
+                    A：{qa.a}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+          {qaBusy && qaStream && (
+            <p className="mb-2 whitespace-pre-wrap rounded-xl bg-blue-50 px-2.5 py-1.5 text-xs leading-relaxed dark:bg-blue-500/10">
+              {qaStream}
+            </p>
+          )}
+          <div className="flex items-center gap-2">
+            <input
+              data-testid="mat-qa-input"
+              className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-2.5 py-2 text-xs outline-none focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-800"
+              placeholder="对这份资料提问，如：这份资料的重点是什么"
+              value={qaInput}
+              onChange={(e) => setQaInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void askMaterial(qaInput)
+              }}
+            />
+            <button
+              data-testid="mat-qa-send"
+              onClick={() => void askMaterial(qaInput)}
+              disabled={qaBusy || !qaInput.trim()}
+              className="shrink-0 rounded-xl bg-blue-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-40"
+            >
+              {qaBusy ? '回答中' : '提问'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 逐页文本预览 */}
       {m.status === 'ready' && (

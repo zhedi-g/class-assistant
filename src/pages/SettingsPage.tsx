@@ -215,6 +215,43 @@ export default function SettingsPage() {
         <p className="-mt-1 text-[11px] leading-relaxed text-zinc-400 dark:text-zinc-600">
           开启后：转写中检测到值得回答的知识类提问时自动生成回答并提醒（课堂事务与无实质内容的问句自动跳过）。
         </p>
+        <Field label="资料分析模型">
+          <div className="flex gap-2">
+            {(
+              [
+                { v: 'fast', label: '⚡ 极速 · 免费' },
+                { v: 'balanced', label: '🎯 高质量 · 较慢' },
+              ] as const
+            ).map((o) => (
+              <button
+                key={o.v}
+                data-testid={`analysis-model-${o.v}`}
+                onClick={() => s.setSettings({ analysisModel: o.v })}
+                className={`flex-1 rounded-xl border px-3 py-2 text-sm ${
+                  s.analysisModel === o.v
+                    ? 'border-blue-500 text-blue-500'
+                    : 'border-zinc-300 text-zinc-500 dark:border-zinc-700'
+                }`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="图片页识别上限">
+          <select
+            data-testid="ocr-limit"
+            className={inputCls}
+            value={String(s.ocrLimit)}
+            onChange={(e) => s.setSettings({ ocrLimit: Number(e.target.value) })}
+          >
+            {[5, 10, 20, 50].map((n) => (
+              <option key={n} value={n}>
+                每份资料最多 {n} 页
+              </option>
+            ))}
+          </select>
+        </Field>
         <Field label="主题">
           <div className="flex gap-2">
             {(['dark', 'light'] as const).map((t) => (

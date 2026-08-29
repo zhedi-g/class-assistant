@@ -141,8 +141,9 @@ async function resolveProvider(): Promise<ProviderCfg> {
   const secrets = await loadSecrets()
   const s = useSettings.getState()
   if (secrets['zhipu.apiKey']) {
-    // 长上下文优先旗舰，失败回退免费档
-    return { url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', key: secrets['zhipu.apiKey'], models: ['glm-4.6', 'glm-4-flash'] }
+    // 极速模式直接用免费 flash；高质量模式旗舰优先、免费档回退
+    const models = s.analysisModel === 'fast' ? ['glm-4-flash'] : ['glm-4.6', 'glm-4-flash']
+    return { url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', key: secrets['zhipu.apiKey'], models }
   }
   if (secrets['deepseek.apiKey']) {
     return { url: 'https://api.deepseek.com/chat/completions', key: secrets['deepseek.apiKey'], models: [s.deepseekModel || 'deepseek-v4-flash'] }
@@ -150,9 +151,16 @@ async function resolveProvider(): Promise<ProviderCfg> {
   throw new Error('未配置 AI Key：请到「设置」填写智谱或 DeepSeek 的 API Key')
 }
 
-async function callJson(url: string, key: string, model: string, prompt: string): Promise<string> {
+/** 流式调用：onRaw 上报已生成字数（进度感知），完成后返回全文 */
+async function callJsonStream(
+  url: string,
+  key: string,
+  model: string,
+  prompt: string,
+  onRaw?: (chars: number) => void,
+): Promise<string> {
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 120_000)
+  const timer = setTimeout(() => ctrl.abort(), 180_000)
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -162,11 +170,11 @@ async function callJson(url: string, key: string, model: string, prompt: string)
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 3500,
         temperature: 0.2,
-        stream: false,
+        stream: true,
       }),
       signal: ctrl.signal,
     })
-    if (!res.ok) {
+    if (!res.ok || !res.body) {
       let detail = `HTTP ${res.status}`
       try {
         const j = await res.json()
@@ -174,8 +182,32 @@ async function callJson(url: string, key: string, model: string, prompt: string)
       } catch {}
       throw new Error(`${model}: ${detail}`)
     }
-    const j = await res.json()
-    return (j.choices?.[0]?.message?.content ?? '').trim()
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let full = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        const t = line.trim()
+        if (!t.startsWith('data:')) continue
+        const p = t.slice(5).trim()
+        if (!p || p === '[DONE]') continue
+        try {
+          const j = JSON.parse(p) as { choices?: { delta?: { content?: string } }[] }
+          const d = j.choices?.[0]?.delta?.content
+          if (d) {
+            full += d
+            onRaw?.(full.length)
+          }
+        } catch {}
+      }
+    }
+    return full.trim()
   } finally {
     clearTimeout(timer)
   }
@@ -185,15 +217,27 @@ async function callJson(url: string, key: string, model: string, prompt: string)
  * 联合分析：mode=review 时 lessons 为关联的课堂记录（≥1），mode=preview 时为空数组。
  * 结果由调用方写回 db.materials。
  */
+export interface AnalyzeHooks {
+  /** 阶段提示（"视觉识别图片页…"等） */
+  onProgress?: (note: string) => void
+  /** 已生成字数（流式进度感知） */
+  onRaw?: (chars: number) => void
+}
+
 export async function analyzeMaterial(
   material: { name: string; pages: MaterialPage[] },
   lessons: LessonRecord[],
   mode: AnalysisMode,
   matchNote: string,
+  hooks?: AnalyzeHooks,
 ): Promise<MaterialAnalysis> {
   // Mock 模式：E2E 与无 Key 演示用
   if (import.meta.env.VITE_MOCK_ASR === '1') {
-    await new Promise((r) => setTimeout(r, 900))
+    hooks?.onProgress?.('（演示）分析中…')
+    for (const n of [30, 80, 140, 200]) {
+      await new Promise((r) => setTimeout(r, 250))
+      hooks?.onRaw?.(n)
+    }
     const base = {
       outline: ['演示提纲：核心概念引入', '演示提纲：公式与推导', '演示提纲：典型例题'],
       terms: ['动能定理', '合外力', '摩擦生热', '多过程问题'],
@@ -245,7 +289,8 @@ export async function analyzeMaterial(
   let lastErr: Error = new Error('分析失败')
   for (const model of cfg.models) {
     try {
-      const raw = await callJson(cfg.url, cfg.key, model, prompt)
+      hooks?.onProgress?.(`调用 ${model} 分析中…`)
+      const raw = await callJsonStream(cfg.url, cfg.key, model, prompt, hooks?.onRaw)
       const result = parseAnalysisJson(raw) as MaterialAnalysis['result']
       if (!result.outline && !result.summary) throw new Error('结果结构不完整')
       return {

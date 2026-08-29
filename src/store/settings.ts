@@ -27,6 +27,10 @@ interface SettingsState {
   alertWords: string
   /** 自动检测课堂提问并生成 AI 回答 */
   proactive: boolean
+  /** 资料分析模型：balanced=glm-4.6 高质量（较慢），fast=glm-4-flash 极速（免费） */
+  analysisModel: 'balanced' | 'fast'
+  /** 图片页视觉识别页数上限 */
+  ocrLimit: number
   theme: 'dark' | 'light'
   setSettings: (patch: Partial<Omit<SettingsState, 'setSettings'>>) => void
 }
@@ -43,6 +47,8 @@ export const useSettings = create<SettingsState>()(
       hotwords: '',
       alertWords: DEFAULT_ALERT_WORDS,
       proactive: true,
+      analysisModel: 'fast',
+      ocrLimit: 20,
       theme: 'dark',
       setSettings: (patch) => set(patch),
     }),

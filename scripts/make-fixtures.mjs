@@ -70,6 +70,7 @@ const png = Buffer.from(
   'base64',
 )
 zip.file('ppt/media/img1.png', png)
+writeFileSync('fixtures/sample.png', png)
 const pptxBuf = await zip.generateAsync({ type: 'nodebuffer' })
 writeFileSync('fixtures/sample.pptx', pptxBuf)
 

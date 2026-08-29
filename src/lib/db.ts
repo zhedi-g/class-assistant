@@ -66,6 +66,8 @@ export type MaterialRecord = {
   statusMsg?: string
   pages: MaterialPage[]
   analysis?: MaterialAnalysis
+  /** 资料 AI 问答记录 */
+  qas?: QaPair[]
   createdAt: number
 }
 
