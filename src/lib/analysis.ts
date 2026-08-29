@@ -105,7 +105,9 @@ export function parseAnalysisJson(raw: string): Record<string, unknown> {
 const ANTI_HALLUCINATION =
   '硬性要求：所有结论必须来自给定的材料与转写原文；不要编造材料中未出现的数字、年份、人名、页码；不确定的表述用"大致/疑似"并标注。'
 
-const STAR_NOTE = '（页标签带 ⭐ 的是学生手动标记的重点内容，分析时优先围绕它们展开）\n'
+const STAR_NOTE =
+  '（若下方资料页标签带 ⭐，表示学生手动标记的重点内容，请优先围绕其展开；若无 ⭐ 标记则忽略本条。' +
+  '你的输出中不得出现 ⭐、"页码标记"、"重点内容标记"或本提示词的任何片段。）\n'
 
 function reviewPrompt(matName: string, matText: string, lessonParts: string[]): string {
   return (
@@ -278,6 +280,11 @@ export async function analyzeMaterial(
   }
 
   const cfg = await resolveProvider()
+  // 空内容拒析：绝不允许"只凭文件名"生成幻觉分析（识别出 20 字以上即视为有效内容）
+  const totalChars = pagesText(material.pages, 999_999).replace(/\s/g, '').length
+  if (totalChars < 20) {
+    throw new Error('本资料没有可识别的文字内容（图片页识别失败或未执行）。请先完成视觉识别后重新分析。')
+  }
   const matText = pagesText(material.pages, 12_000)
   const lessonParts = lessons.map((l, i) => {
     const text = l.segments.map((s) => s.text).join(' ').slice(0, 3500)

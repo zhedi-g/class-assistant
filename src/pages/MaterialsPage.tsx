@@ -48,7 +48,8 @@ export default function MaterialsPage() {
   useEffect(refresh, [])
 
   async function handleFiles(list: FileList) {
-    for (const file of Array.from(list)) {
+    // createdAt 按序号递增：批量上传时保证卡片顺序稳定（同一毫秒会导致排序不定）
+    for (const [i, file] of Array.from(list).entries()) {
       const kind = detectKind(file.name, file.type)
       if (!kind) {
         notify(`不支持的格式：${file.name}`)
@@ -62,7 +63,7 @@ export default function MaterialsPage() {
           size: file.size,
           status: 'parsing',
           pages: [],
-          createdAt: Date.now(),
+          createdAt: Date.now() + i,
         }),
       )
       try {
@@ -278,6 +279,13 @@ function MaterialDetail({
         await db.materials.update(m.id!, { pages: m.pages })
         if (ok + fail > 0) setOcrNote(`图片页识别：成功 ${ok} 页${fail ? `，失败 ${fail} 页（可重试）` : ''}`)
       }
+      // 空内容拒析：识别后仍几乎无文字（纯扫描件识别失败/超上限）→ 不调用 AI，避免幻觉分析
+      const totalChars = pagesText(m.pages, 999_999).replace(/\s/g, '').length
+      if (totalChars < 20) {
+        setError('本资料没有可识别的文字（图片页识别失败或超上限）。请点「重试识别」或在设置中调高页数上限后重试。')
+        setStep('idle')
+        return
+      }
       const lessons = lessonIds.map((id) => lessonsCache[id]).filter(Boolean)
       // ⭐ 标记页注入：学生手动标注的重点在提示词中被优先参考
       const pagesForAi = m.pages.map((p) => (p.marked ? { ...p, label: `⭐${p.label}` } : p))
@@ -336,6 +344,18 @@ function MaterialDetail({
     if (!question || qaBusy) return
     setQaBusy(true)
     setQaStream('')
+    // 纯扫描件：先自动视觉识别，再回答（仍无文字则明确报错）
+    if (pagesText(m.pages, 6000).replace(/\s/g, '').length < 50) {
+      setQaStream('本资料暂无可识别文字，正在视觉识别…')
+      await runOcr(m.pages)
+      await db.materials.update(m.id!, { pages: m.pages })
+      if (pagesText(m.pages, 6000).replace(/\s/g, '').length < 50) {
+        setQaStream('')
+        notify('该资料没有可识别的文字（图片页识别失败或超上限）')
+        setQaBusy(false)
+        return
+      }
+    }
     let a = ''
     try {
       await askAI({

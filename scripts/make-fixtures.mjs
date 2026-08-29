@@ -95,6 +95,25 @@ for (let i = 1; i <= objs.length; i++) pdf += `${String(offsets[i]).padStart(10,
 pdf += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF`
 writeFileSync('fixtures/sample.pdf', Buffer.from(pdf, 'latin1'))
 
+// ── scan.pdf：无文字层（纯扫描页），验证"渲染成图→视觉识别→分析"全链路 ──
+const scanObjs = [
+  '<< /Type /Catalog /Pages 2 0 R >>',
+  '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+  '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>',
+  '<< /Length 2 >>\nstream\n\nendstream',
+]
+let spdf = '%PDF-1.4\n'
+const soffsets = [0]
+for (let i = 0; i < scanObjs.length; i++) {
+  soffsets.push(spdf.length)
+  spdf += `${i + 1} 0 obj\n${scanObjs[i]}\nendobj\n`
+}
+const sxref = spdf.length
+spdf += `xref\n0 ${scanObjs.length + 1}\n0000000000 65535 f \n`
+for (let i = 1; i <= scanObjs.length; i++) spdf += `${String(soffsets[i]).padStart(10, '0')} 00000 n \n`
+spdf += `trailer\n<< /Size ${scanObjs.length + 1} /Root 1 0 R >>\nstartxref\n${sxref}\n%%EOF`
+writeFileSync('fixtures/scan.pdf', Buffer.from(spdf, 'latin1'))
+
 // ── txt ──
 writeFileSync(
   'fixtures/sample.txt',

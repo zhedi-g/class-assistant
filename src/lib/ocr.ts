@@ -15,7 +15,7 @@ async function zhipuKey(): Promise<string | null> {
 export async function ocrImage(blob: Blob): Promise<string> {
   if (import.meta.env.VITE_MOCK_ASR === '1') {
     await new Promise((r) => setTimeout(r, 300))
-    return '（演示识别）图片页文字示例：动能定理典型例题与解题步骤。'
+    return '（演示识别）本页介绍动能定理的典型例题：物体沿粗糙斜面下滑，已知倾角与摩擦系数，求到达底端时的速度，并说明每一步使用的定理与注意事项。'
   }
   const key = await zhipuKey()
   if (!key) throw new Error('视觉识别需要智谱 API Key')

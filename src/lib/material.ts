@@ -70,6 +70,9 @@ export async function parsePptx(file: File, onProgress?: ParseProgress): Promise
 }
 
 /** pdf：pdf.js 文字层；无文字层的页标记 needOcr（渲染成图由调用方处理，D2 接视觉） */
+/** 渲染无文字层页面上限：防止超扫描版一次占满内存/存储（超出部分仍标记 needOcr） */
+const PDF_RENDER_CAP = 50
+
 export async function parsePdf(file: File, onProgress?: ParseProgress): Promise<MaterialPage[]> {
   // 浏览器用主构建；Node（测试环境）没有 DOMMatrix，需用 legacy 构建
   const pdfjs =
@@ -85,6 +88,7 @@ export async function parsePdf(file: File, onProgress?: ParseProgress): Promise<
   const buf = await file.arrayBuffer()
   const doc = await pdfjs.getDocument({ data: buf }).promise
   const pages: MaterialPage[] = []
+  let rendered = 0
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i)
     const content = await page.getTextContent()
@@ -94,7 +98,32 @@ export async function parsePdf(file: File, onProgress?: ParseProgress): Promise<
       .replace(/\s+/g, ' ')
       .trim()
     const p: MaterialPage = { label: `第 ${i} 页`, text }
-    if (!text) p.needOcr = true
+    if (!text) {
+      // 无文字层 = 扫描/图片页：标记 needOcr，并在浏览器端渲染成图片供视觉识别。
+      // 这是扫描版 PDF 能走通"自动识别→分析"的关键（此前只打标记不渲染，OCR 无米下锅）。
+      p.needOcr = true
+      if (typeof window !== 'undefined' && rendered < PDF_RENDER_CAP) {
+        try {
+          const viewport = page.getViewport({ scale: 2 })
+          const canvas = document.createElement('canvas')
+          canvas.width = Math.floor(viewport.width)
+          canvas.height = Math.floor(viewport.height)
+          const ctx = canvas.getContext('2d')
+          if (ctx) {
+            await page.render({ canvasContext: ctx, viewport, canvas }).promise
+            const blob = await new Promise<Blob | null>((resolve) =>
+              canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.85),
+            )
+            if (blob) {
+              p.imageBlobs = [blob]
+              rendered++
+            }
+          }
+        } catch {
+          // 渲染失败仅影响 OCR 素材，不影响页本身
+        }
+      }
+    }
     pages.push(p)
     onProgress?.(i, doc.numPages, `解析 PDF ${i}/${doc.numPages}`)
   }
@@ -158,4 +187,15 @@ export async function togglePageMark(id: number, label: string): Promise<boolean
   const pages = rec.pages.map((p) => (p.label === label ? { ...p, marked: !p.marked } : p))
   await db.materials.update(id, { pages })
   return pages.find((p) => p.label === label)?.marked ?? null
+}
+
+/** 视觉识别后回填页文字（清 needOcr 与图片素材） */
+export async function savePageText(id: number, label: string, text: string): Promise<void> {
+  const rec = await db.materials.get(id)
+  if (!rec) return
+  await db.materials.update(id, {
+    pages: rec.pages.map((p) =>
+      p.label === label ? { ...p, text, needOcr: false, imageBlobs: undefined } : p,
+    ),
+  })
 }
