@@ -3,6 +3,7 @@ import { fmtDuration, resumeCapture, useSession } from '../store/session'
 import { loadSecrets, type SecretMap } from '../lib/secretStore'
 import { vibrateSupported } from '../lib/vibrate'
 import { useSettings } from '../store/settings'
+import { db } from '../lib/db'
 import AskSheet, { type SheetSeg } from '../components/AskSheet'
 
 type AskTarget = SheetSeg | null
@@ -69,8 +70,19 @@ function IdleView() {
   const s = useSession()
   const alertWords = useSettings((st) => st.alertWords)
   const [secrets, setSecrets] = useState<SecretMap | null>(null)
+  const [todos, setTodos] = useState<{ text: string; date: string }[]>([])
   useEffect(() => {
     loadSecrets().then(setSecrets)
+    // 汇总各节课清洗出的待办（最近 3 条）
+    db.lessons
+      .orderBy('createdAt')
+      .reverse()
+      .toArray()
+      .then((ls) => {
+        const t = ls.flatMap((l) => (l.cleaned?.todos ?? []).map((x) => ({ text: x.text, date: l.date })))
+        setTodos(t.slice(0, 3))
+      })
+      .catch(() => setTodos([]))
   }, [])
 
   const iflyOk = !!secrets?.['iflytek.apiKey'] && !!secrets?.['iflytek.apiSecret']
@@ -95,6 +107,20 @@ function IdleView() {
         <p className="rounded-xl bg-zinc-100 px-3 py-2 text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
           当前浏览器不支持震动（iOS 常见）：命中关键词时将以屏幕横幅提醒代替，震动需在安卓端或后续 APK 版本使用。
         </p>
+      )}
+
+      {todos.length > 0 && (
+        <section data-testid="todo-card" className="rounded-2xl border border-amber-400/50 bg-amber-50/60 p-3 dark:border-amber-500/30 dark:bg-amber-500/5">
+          <p className="mb-1 text-xs font-semibold text-amber-600 dark:text-amber-400">🔔 课堂待办</p>
+          <ul className="space-y-1">
+            {todos.map((t, i) => (
+              <li key={i} className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
+                · {t.text}
+                <span className="ml-1 text-[10px] text-zinc-400">（{t.date}）</span>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       <button

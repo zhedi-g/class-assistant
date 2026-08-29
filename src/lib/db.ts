@@ -73,6 +73,14 @@ export type MaterialRecord = {
   createdAt: number
 }
 
+export interface LessonCleaned {
+  /** 段落 id → 分类（只标记不删除，原始段永久保留） */
+  labels: Record<string, string>
+  /** 从课堂事务中提取的待办 */
+  todos: { text: string; ts: number }[]
+  ts: number
+}
+
 export interface LessonRecord {
   id?: number
   date: string
@@ -81,12 +89,30 @@ export interface LessonRecord {
   segments: Segment[]
   /** 课中/课后的 AI 问答 */
   qas?: QaPair[]
+  /** 课后清洗结果（M6） */
+  cleaned?: LessonCleaned
   createdAt: number
 }
 
 export const db = new Dexie('class-helper-data') as Dexie & {
   lessons: EntityTable<LessonRecord, 'id'>
   materials: EntityTable<MaterialRecord, 'id'>
+  reviewPacks: EntityTable<ReviewPackRecord, 'id'>
+}
+
+export interface ReviewPackRecord {
+  id?: number
+  lessonIds: number[]
+  mode: 'single' | 'sprint'
+  data: {
+    notes: { heading: string; points: string[] }[]
+    keyPoints: { text: string; basis?: string }[]
+    flashcards: { q: string; a: string }[]
+    knowledgeMap?: string[]
+    coverage?: { high: string[]; low: string[] } | null
+    summary: string
+  }
+  createdAt: number
 }
 
 db.version(1).stores({
@@ -102,4 +128,11 @@ db.version(2).stores({
 db.version(3).stores({
   lessons: '++id, date, startTs, createdAt',
   materials: '++id, createdAt',
+})
+
+// v4：复习包（M6）
+db.version(4).stores({
+  lessons: '++id, date, startTs, createdAt',
+  materials: '++id, createdAt',
+  reviewPacks: '++id, createdAt',
 })
