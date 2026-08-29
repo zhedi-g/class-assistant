@@ -13,6 +13,7 @@
     "test:m3": "node scripts/m3-test.mjs",
     "test:m4": "node scripts/m4-test.mjs",
     "test:m42": "node scripts/m42-test.mjs",
+    "test:m5": "node scripts/m5-test.mjs",
     "test:d1": "tsx scripts/d1-test.ts",
     "test:d2": "tsx scripts/d2-test.ts",
     "fixtures": "node scripts/make-fixtures.mjs"

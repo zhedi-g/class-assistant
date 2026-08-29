@@ -1,0 +1,478 @@
+// 资料库页（M5-D3）：上传 → 本地解析 → 关联课堂 → AI 联合分析 → 结构化结果卡片 + 术语回写热词。
+import { useEffect, useRef, useState } from 'react'
+import { db, type LessonRecord, type MaterialRecord } from '../lib/db'
+import { detectKind, parseMaterial } from '../lib/material'
+import { analyzeMaterial, matchMaterialToLessons, mergeHotwords, type MatchCandidate } from '../lib/analysis'
+import { ocrImage } from '../lib/ocr'
+import { useSettings } from '../store/settings'
+import { useSession } from '../store/session'
+
+const KIND_META: Record<string, { icon: string; label: string }> = {
+  pptx: { icon: '📊', label: 'PPT' },
+  pdf: { icon: '📄', label: 'PDF' },
+  text: { icon: '📝', label: '文本' },
+  image: { icon: '🖼️', label: '图片' },
+}
+
+type Step = 'idle' | 'matching' | 'analyzing'
+
+export default function MaterialsPage() {
+  const notify = useSession((s) => s.notify)
+  const [materials, setMaterials] = useState<MaterialRecord[] | null>(null)
+  const [openId, setOpenId] = useState<number | null>(null)
+  const [uploading, setUploading] = useState<string | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const refresh = () => {
+    db.materials
+      .orderBy('createdAt')
+      .reverse()
+      .toArray()
+      .then(setMaterials)
+      .catch(() => setMaterials([]))
+  }
+  useEffect(refresh, [])
+
+  async function handleFiles(list: FileList) {
+    for (const file of Array.from(list)) {
+      const kind = detectKind(file.name, file.type)
+      if (!kind) {
+        notify(`不支持的格式：${file.name}`)
+        continue
+      }
+      setUploading(`解析 ${file.name}…`)
+      const id = Number(
+        await db.materials.add({
+          name: file.name,
+          kind,
+          size: file.size,
+          status: 'parsing',
+          pages: [],
+          createdAt: Date.now(),
+        }),
+      )
+      try {
+        const pages = await parseMaterial(file, kind, (done, total, note) =>
+          setUploading(`${file.name}：${note ?? `${done}/${total}`}`),
+        )
+        await db.materials.update(id, { pages, status: 'ready' })
+        setOpenId(id)
+      } catch (e) {
+        await db.materials.update(id, { status: 'failed', statusMsg: (e as Error).message })
+        notify(`解析失败：${file.name}`)
+      }
+    }
+    setUploading(null)
+    refresh()
+  }
+
+  return (
+    <div className="space-y-4">
+      <header className="flex items-center justify-between">
+        <h1 className="text-xl font-bold">资料库</h1>
+        {materials !== null && materials.length > 0 && (
+          <button
+            data-testid="clear-materials"
+            onClick={async () => {
+              if (!confirm('清空全部资料（含分析结果）？不可恢复。')) return
+              await db.materials.clear()
+              setOpenId(null)
+              refresh()
+            }}
+            className="rounded-lg px-2 py-1 text-xs text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10"
+          >
+            清空资料
+          </button>
+        )}
+      </header>
+
+      <input
+        ref={fileRef}
+        data-testid="mat-input"
+        type="file"
+        multiple
+        accept=".pptx,.pdf,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp,.bmp"
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files?.length) void handleFiles(e.target.files)
+          e.target.value = ''
+        }}
+      />
+      <button
+        data-testid="upload-btn"
+        onClick={() => fileRef.current?.click()}
+        disabled={uploading !== null}
+        className="w-full rounded-2xl border-2 border-dashed border-blue-400/60 bg-blue-50/50 py-5 text-sm font-medium text-blue-600 active:scale-[0.99] disabled:opacity-50 dark:border-blue-500/40 dark:bg-blue-500/5 dark:text-blue-400"
+      >
+        {uploading ?? '＋ 上传资料（PPT / PDF / 文本 / 图片）'}
+      </button>
+      <p className="text-center text-[11px] text-zinc-400 dark:text-zinc-600">
+        课前传=预习包，课后传=自动关联课堂记录做联合分析；文件只存本机，点分析时才发送文本给 AI
+      </p>
+
+      {materials === null && <p className="pt-6 text-center text-sm text-zinc-400">加载中…</p>}
+
+      {materials !== null && materials.length === 0 && (
+        <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-zinc-300 py-14 text-center dark:border-zinc-800">
+          <span className="text-3xl">📚</span>
+          <p className="text-sm text-zinc-500">还没有资料</p>
+          <p className="px-8 text-xs text-zinc-400 dark:text-zinc-600">
+            上传老师的 PPT、讲义、教材章节或板书照片，AI 会自动关联相关课堂记录做联合分析，给出预习或复习建议。
+          </p>
+        </div>
+      )}
+
+      {materials !== null &&
+        materials.map((m) => (
+          <MaterialCard
+            key={m.id}
+            record={m}
+            open={openId === m.id}
+            onToggle={() => setOpenId(openId === m.id ? null : (m.id ?? null))}
+            onChanged={refresh}
+            notify={notify}
+          />
+        ))}
+    </div>
+  )
+}
+
+function MaterialCard({
+  record: m,
+  open,
+  onToggle,
+  onChanged,
+  notify,
+}: {
+  record: MaterialRecord
+  open: boolean
+  onToggle: () => void
+  onChanged: () => void
+  notify: (msg: string) => void
+}) {
+  const meta = KIND_META[m.kind] ?? { icon: '📄', label: m.kind }
+  return (
+    <div
+      data-testid="material-card"
+      className="overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
+    >
+      <button data-testid="material-toggle" onClick={onToggle} className="w-full p-4 text-left active:bg-zinc-50 dark:active:bg-zinc-800/50">
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="text-lg">{meta.icon}</span>
+            <span className="truncate text-sm font-semibold">{m.name}</span>
+          </span>
+          <span className="shrink-0 text-xs text-zinc-400">
+            {m.status === 'ready' && `${m.pages.length} 页`}
+            {m.status === 'parsing' && '解析中…'}
+            {m.status === 'failed' && '解析失败'}
+            <span className="ml-1 text-zinc-300 dark:text-zinc-600">{open ? '▲' : '▼'}</span>
+          </span>
+        </div>
+        {m.analysis && (
+          <p className="mt-1.5 text-xs">
+            <span className={m.analysis.mode === 'review' ? 'text-emerald-500' : 'text-sky-500'}>
+              {m.analysis.mode === 'review' ? '🔁 联合分析' : '🚀 预习包'}
+            </span>
+            <span className="ml-2 text-zinc-400">{m.analysis.matchNote}</span>
+          </p>
+        )}
+        {m.status === 'failed' && <p className="mt-1 text-xs text-red-500">{m.statusMsg}</p>}
+      </button>
+
+      {open && <MaterialDetail record={m} onChanged={onChanged} notify={notify} />}
+    </div>
+  )
+}
+
+function MaterialDetail({
+  record: m,
+  onChanged,
+  notify,
+}: {
+  record: MaterialRecord
+  onChanged: () => void
+  notify: (msg: string) => void
+}) {
+  const [step, setStep] = useState<Step>('idle')
+  const [candidates, setCandidates] = useState<MatchCandidate[]>([])
+  const [selected, setSelected] = useState<Record<number, boolean>>({})
+  const [lessonsCache, setLessonsCache] = useState<Record<number, LessonRecord>>({})
+  const [analyzing, setAnalyzing] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [ocrNote, setOcrNote] = useState<string | null>(null)
+  const setHotwords = useSettings((s) => s.setSettings)
+  const hotwords = useSettings((s) => s.hotwords)
+
+  async function startMatching() {
+    setError(null)
+    setStep('matching')
+    const lessons = await db.lessons.toArray()
+    const cache: Record<number, LessonRecord> = {}
+    for (const l of lessons) if (l.id !== undefined) cache[l.id] = l
+    setLessonsCache(cache)
+    const cands = matchMaterialToLessons(m, lessons)
+    if (!cands.length || cands[0].score < 0.06) {
+      await runAnalysis([], '未找到相关课堂记录 · 预习模式')
+      return
+    }
+    setSelected(Object.fromEntries(cands.map((c) => [c.lessonId, true])))
+    setCandidates(cands)
+  }
+
+  async function runAnalysis(lessonIds: number[], matchNote: string) {
+    setStep('analyzing')
+    setAnalyzing('准备分析…')
+    try {
+      let pages = m.pages
+      const ocrPages = pages.filter((p) => p.needOcr && p.imageBlobs?.length)
+      if (ocrPages.length > 0) {
+        const max = Math.min(5, ocrPages.length)
+        for (let i = 0; i < max; i++) {
+          const p = ocrPages[i]
+          setAnalyzing(`视觉识别图片页（${i + 1}/${max}）…`)
+          try {
+            const text = await ocrImage(p.imageBlobs![0])
+            p.text = text
+            p.needOcr = false
+            p.imageBlobs = undefined
+          } catch {
+            p.text = p.text || '（图片识别失败）'
+            p.needOcr = false
+          }
+        }
+        setOcrNote(`已识别 ${max} 个图片页`)
+        await db.materials.update(m.id!, { pages })
+      }
+      setAnalyzing('AI 联合分析中（约 10~30 秒）…')
+      const lessons = lessonIds.map((id) => lessonsCache[id]).filter(Boolean)
+      const analysis = await analyzeMaterial({ name: m.name, pages }, lessons, lessonIds.length ? 'review' : 'preview', matchNote)
+      await db.materials.update(m.id!, { analysis })
+      onChanged()
+      notify(analysis.mode === 'review' ? '联合分析完成' : '预习包已生成')
+      setStep('idle')
+    } catch (e) {
+      setError((e as Error).message)
+      setStep('idle')
+    } finally {
+      setAnalyzing(null)
+    }
+  }
+
+  async function mergeTerms() {
+    if (!m.analysis?.result.terms?.length) return
+    setHotwords({ hotwords: mergeHotwords(hotwords, m.analysis.result.terms) })
+    notify(`已合并 ${m.analysis.result.terms.length} 个术语进识别热词`)
+  }
+
+  return (
+    <div className="border-t border-zinc-100 p-4 dark:border-zinc-800">
+      {/* 状态：解析中/失败 */}
+      {m.status === 'parsing' && <p className="text-xs text-zinc-400">解析中…</p>}
+      {m.status === 'failed' && <p className="text-xs text-red-500">{m.statusMsg}</p>}
+
+      {/* 已有分析结果 */}
+      {m.analysis && <AnalysisView analysis={m.analysis} onMergeTerms={mergeTerms} />}
+
+      {/* 无结果：分析入口/候选确认/分析中 */}
+      {!m.analysis && step === 'idle' && (
+        <button
+          data-testid="analyze-btn"
+          onClick={() => void startMatching()}
+          disabled={m.status !== 'ready'}
+          className="w-full rounded-xl bg-blue-600 py-2.5 text-sm font-medium text-white disabled:opacity-40"
+        >
+          开始分析
+        </button>
+      )}
+
+      {step === 'matching' && (
+        <div data-testid="match-list" className="space-y-2">
+          <p className="text-xs font-semibold text-zinc-500">发现可能相关的课堂记录，请确认（可多选）：</p>
+          {candidates.map((c) => (
+            <label key={c.lessonId} className="flex items-center gap-2 rounded-xl border border-zinc-200 px-3 py-2 text-xs dark:border-zinc-700">
+              <input
+                type="checkbox"
+                checked={!!selected[c.lessonId]}
+                onChange={(e) => setSelected((s) => ({ ...s, [c.lessonId]: e.target.checked }))}
+              />
+              <span className="flex-1">
+                {c.date} 的课
+                <span className="ml-2 text-zinc-400">
+                  相似度 {Math.round(c.score * 100)}%
+                  {c.termHits.length > 0 && ` · 重合词：${c.termHits.slice(0, 4).join('、')}`}
+                </span>
+              </span>
+            </label>
+          ))}
+          <div className="flex gap-2">
+            <button
+              data-testid="analyze-confirm"
+              onClick={() => {
+                const ids = Object.entries(selected)
+                  .filter(([, v]) => v)
+                  .map(([k]) => Number(k))
+                const top = candidates[0]
+                const note = ids.length
+                  ? `已关联 ${ids.length} 节课 · 相似度 ${Math.round((candidates.find((c) => c.lessonId === ids[0])?.score ?? 0) * 100)}%`
+                  : '未关联课堂记录 · 预习模式'
+                void runAnalysis(ids, note)
+              }}
+              className="flex-1 rounded-xl bg-blue-600 py-2.5 text-sm font-medium text-white"
+            >
+              开始联合分析
+            </button>
+            <button
+              data-testid="analyze-preview-only"
+              onClick={() => void runAnalysis([], '手动选择 · 预习模式')}
+              className="rounded-xl border border-zinc-300 px-3 py-2.5 text-sm text-zinc-500 dark:border-zinc-700"
+            >
+              仅预习
+            </button>
+          </div>
+          <button onClick={() => setStep('idle')} className="w-full text-center text-xs text-zinc-400">
+            取消
+          </button>
+        </div>
+      )}
+
+      {step === 'analyzing' && (
+        <p data-testid="analyzing" className="animate-pulse py-2 text-center text-xs text-blue-500">
+          {analyzing ?? '分析中…'}
+        </p>
+      )}
+      {ocrNote && <p className="pt-1 text-[11px] text-zinc-400">{ocrNote}</p>}
+      {error && <p className="pt-1 text-xs text-red-500">{error}</p>}
+
+      {/* 逐页文本预览 */}
+      {m.status === 'ready' && (
+        <details className="mt-3">
+          <summary className="cursor-pointer text-[11px] text-zinc-400">查看解析出的 {m.pages.length} 页文本</summary>
+          <div className="mt-2 max-h-52 space-y-2 overflow-y-auto">
+            {m.pages.map((p) => (
+              <p key={p.label} className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                <span className="mr-1.5 font-mono text-[10px] text-zinc-400">{p.label}</span>
+                {p.text || (p.needOcr ? '（图片页：分析时将自动视觉识别）' : '（无文字）')}
+              </p>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  )
+}
+
+function AnalysisView({ analysis, onMergeTerms }: { analysis: NonNullable<MaterialRecord['analysis']>; onMergeTerms: () => void }) {
+  const r = analysis.result
+  return (
+    <div data-testid="analysis-result" className="space-y-3">
+      <p className="text-xs">
+        <span className={`rounded px-1.5 py-0.5 font-semibold ${analysis.mode === 'review' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400' : 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-400'}`}>
+          {analysis.mode === 'review' ? '🔁 复习模式 · 联合分析' : '🚀 预习模式'}
+        </span>
+        <span className="ml-2 text-zinc-400">{analysis.matchNote}</span>
+      </p>
+      {r.summary && <p className="rounded-xl bg-zinc-50 px-3 py-2 text-sm leading-relaxed dark:bg-zinc-800/60">{r.summary}</p>}
+
+      {r.outline && (
+        <Section title="提纲">
+          <ol className="list-decimal space-y-1 pl-4 text-xs leading-relaxed">
+            {r.outline.map((x, i) => (
+              <li key={i}>{x}</li>
+            ))}
+          </ol>
+        </Section>
+      )}
+
+      {r.terms && (
+        <Section title="核心术语">
+          <div className="flex flex-wrap gap-1.5">
+            {r.terms.map((t) => (
+              <span key={t} className="rounded-lg bg-zinc-100 px-2 py-0.5 text-xs dark:bg-zinc-800">
+                {t}
+              </span>
+            ))}
+          </div>
+          <button
+            data-testid="merge-terms"
+            onClick={onMergeTerms}
+            className="mt-2 rounded-lg border border-blue-400/60 px-2.5 py-1 text-xs text-blue-600 dark:border-blue-500/40 dark:text-blue-400"
+          >
+            ⚡ 将这 {r.terms.length} 个术语加入识别热词
+          </button>
+        </Section>
+      )}
+
+      {analysis.mode === 'review' && r.compare && (
+        <Section title="资料 × 课堂对照">
+          <CompareBlock title="🧩 资料有、课堂未细讲（自己补）" items={r.compare.inMaterialOnly} />
+          <CompareBlock title="🔥 课堂反复强调、资料简略（重点信号）" items={r.compare.emphasizedInClass} gold />
+          <CompareBlock title="🔀 两者表述不同" items={r.compare.differs} />
+        </Section>
+      )}
+
+      {analysis.mode === 'preview' && r.listenQuestions && (
+        <Section title="带着这些问题去听课">
+          <ul className="space-y-1 text-xs leading-relaxed">
+            {r.listenQuestions.map((x, i) => (
+              <li key={i}>❓ {x}</li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {analysis.mode === 'preview' && r.hardPoints && (
+        <Section title="难点预警">
+          <ul className="space-y-1 text-xs leading-relaxed">
+            {r.hardPoints.map((x, i) => (
+              <li key={i}>⚠️ {x}</li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {analysis.mode === 'review' && r.examFocus && (
+        <Section title="预测考点">
+          <ul className="space-y-1 text-xs leading-relaxed">
+            {r.examFocus.map((x, i) => (
+              <li key={i}>🎯 {x}</li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {r.reviewPlan && (
+        <Section title={analysis.mode === 'review' ? '复习建议（按优先级）' : '预习行动建议'}>
+          <ol className="list-decimal space-y-1 pl-4 text-xs leading-relaxed">
+            {r.reviewPlan.map((x, i) => (
+              <li key={i}>{x}</li>
+            ))}
+          </ol>
+        </Section>
+      )}
+    </div>
+  )
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-800">
+      <p className="mb-1.5 text-xs font-semibold text-zinc-600 dark:text-zinc-300">{title}</p>
+      {children}
+    </div>
+  )
+}
+
+function CompareBlock({ title, items, gold }: { title: string; items?: string[]; gold?: boolean }) {
+  if (!items?.length) return null
+  return (
+    <div className="mb-2 last:mb-0">
+      <p className={`mb-1 text-[11px] font-semibold ${gold ? 'text-amber-600 dark:text-amber-400' : 'text-zinc-500'}`}>{title}</p>
+      <ul className="space-y-0.5 pl-3 text-xs leading-relaxed">
+        {items.map((x, i) => (
+          <li key={i}>· {x}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}

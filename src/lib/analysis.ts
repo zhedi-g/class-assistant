@@ -191,6 +191,46 @@ export async function analyzeMaterial(
   mode: AnalysisMode,
   matchNote: string,
 ): Promise<MaterialAnalysis> {
+  // Mock 模式：E2E 与无 Key 演示用
+  if (import.meta.env.VITE_MOCK_ASR === '1') {
+    await new Promise((r) => setTimeout(r, 900))
+    const base = {
+      outline: ['演示提纲：核心概念引入', '演示提纲：公式与推导', '演示提纲：典型例题'],
+      terms: ['动能定理', '合外力', '摩擦生热', '多过程问题'],
+      summary: '（演示分析）这份资料与课堂内容高度相关，建议重点核对课堂强调的部分。',
+    }
+    if (mode === 'review') {
+      return {
+        mode,
+        lessonIds: lessons.map((l) => l.id ?? 0),
+        matchNote,
+        result: {
+          ...base,
+          compare: {
+            inMaterialOnly: ['资料中的斜面例题课堂未细讲'],
+            emphasizedInClass: ['多过程问题分段求功（课堂重复强调）'],
+            differs: [],
+          },
+          reviewPlan: ['先复习动能定理表达式', '再做斜面模型例题', '整理多过程问题步骤'],
+          examFocus: ['多过程问题（依据：课堂强调多次）', '摩擦生热计算（依据：课堂标注常考）'],
+        },
+        createdAt: Date.now(),
+      }
+    }
+    return {
+      mode,
+      lessonIds: [],
+      matchNote,
+      result: {
+        ...base,
+        listenQuestions: ['老师会如何引入动能定理？', '会重点讲哪些典型模型？'],
+        hardPoints: ['变力做功的处理方法'],
+        reviewPlan: ['通读提纲记住结构', '背熟核心公式', '带着听课问题去上课'],
+      },
+      createdAt: Date.now(),
+    }
+  }
+
   const cfg = await resolveProvider()
   const matText = pagesText(material.pages, 12_000)
   const lessonParts = lessons.map((l, i) => {

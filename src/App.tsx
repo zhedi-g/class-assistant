@@ -3,9 +3,10 @@ import { useSettings } from './store/settings'
 import { useSession } from './store/session'
 import LivePage from './pages/LivePage'
 import RecordsPage from './pages/RecordsPage'
+import MaterialsPage from './pages/MaterialsPage'
 import SettingsPage from './pages/SettingsPage'
 
-type Tab = 'live' | 'records' | 'settings'
+type Tab = 'live' | 'records' | 'materials' | 'settings'
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('live')
@@ -22,6 +23,7 @@ export default function App() {
       <main className="mx-auto w-full max-w-lg flex-1 px-4 pb-28 pt-5">
         {tab === 'live' && <LivePage />}
         {tab === 'records' && <RecordsPage />}
+        {tab === 'materials' && <MaterialsPage />}
         {tab === 'settings' && <SettingsPage />}
       </main>
       {toast && (
@@ -47,6 +49,12 @@ const ICONS: Record<Tab, ReactNode> = {
       <path d="M4 6h16M4 12h16M4 18h10" />
     </svg>
   ),
+  materials: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+      <path d="M4 19V6a2 2 0 0 1 2-2h13v13H6a2 2 0 0 0-2 2Zm0 0a2 2 0 0 0 2 2h13v-4" />
+      <path d="M9 7h7" />
+    </svg>
+  ),
   settings: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
       <path d="M4 7h9M17 7h3M15 5v4" />
@@ -59,6 +67,7 @@ function BottomNav({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) 
   const items: { id: Tab; label: string }[] = [
     { id: 'live', label: '课堂' },
     { id: 'records', label: '记录' },
+    { id: 'materials', label: '资料' },
     { id: 'settings', label: '设置' },
   ]
   return (
