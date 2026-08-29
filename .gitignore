@@ -5,3 +5,4 @@ shots
 secrets*
 xfyun.local.*
 .DS_Store
+.github/workflows/deploy.yml
