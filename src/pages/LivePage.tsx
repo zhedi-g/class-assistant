@@ -132,11 +132,15 @@ function RecordingView({
           <span data-testid="conn-dot" className={`h-2 w-2 rounded-full ${connColor}`} />
           {connText}
         </span>
+        <span data-testid="ai-fix" className={s.aiFix ? 'text-emerald-500' : 'text-zinc-400 dark:text-zinc-600'}>
+          {s.aiFix ? 'AI校对 开' : 'AI校对 关'}
+        </span>
         <span data-testid="elapsed" className="font-mono text-sm font-semibold">
           {fmtDuration(elapsed)}
         </span>
         {s.reconnects > 0 && <span className="text-amber-500">重连 {s.reconnects} 次</span>}
       </div>
+      {s.connNote && <p className="px-1 text-[11px] text-zinc-400 dark:text-zinc-600">{s.connNote}</p>}
 
       {s.errMsg && (
         <p data-testid="err" className="rounded-xl border border-red-300/50 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">

@@ -6,7 +6,7 @@
 
 export interface AsrHandlers {
   /** silent=true 表示服务端正常收尾后的静默续连：不计数、不变状态灯 */
-  onReconnecting?: (silent?: boolean) => void
+  onReconnecting?: (silent?: boolean, reason?: string) => void
   onOpen?: () => void
   onInterim: (text: string) => void
   onFinal: (text: string) => void
@@ -30,9 +30,11 @@ export interface IAsrSession {
 const enc = new TextEncoder()
 const RECONNECT_BACKLOG = 300 // 续传缓冲上限：300 帧 ≈ 12s 音频
 const FLUSH_BATCH = 25 // 每跳最多补发 25 帧 ≈ 1s 音频，避免突发被服务端拒绝
-const MAX_FAST_FAILURES = 3 // 10 秒内异常断开 ≥3 次视为环境故障，停止并提示
+const MAX_FAST_FAILURES = 4 // 15 秒内异常断开 ≥4 次视为环境故障，停止并提示
 /** 出现即干净重连、不惊动用户的可恢复错误（句柄回收/临时资源不足等） */
 const RECOVERABLE_CODES = new Set([10165, 10110, 11201, 11202])
+/** 这些关闭码 + 刚收完一段（3s 内）→ 视为服务端正常回收，静默续连 */
+const NORMAL_CLOSE_CODES = new Set([1000, 1005, 1006])
 
 function b64(bytes: ArrayBuffer | Uint8Array): string {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
@@ -83,6 +85,7 @@ export class IatSession implements IAsrSession {
   private myId = 0
   private reconnecting = false
   private lastEndedNormally = false
+  private lastFinalAt = 0
   private abnormalCloses: number[] = []
 
   constructor(
@@ -159,7 +162,7 @@ export class IatSession implements IAsrSession {
               // 句柄已失效等：当前连接已废，干净重建并丢弃过期积压，不打扰用户
               this.segment = ''
               this.pending = []
-              this.h.onReconnecting?.(false)
+              this.h.onReconnecting?.(false, `服务端回收连接(${j.code})已自动重连`)
               this.hardReconnect()
               return
             }
@@ -182,6 +185,7 @@ export class IatSession implements IAsrSession {
 
           if (j.data?.status === 2 && this.segment) {
             this.lastEndedNormally = true
+            this.lastFinalAt = Date.now()
             this.h.onFinal(this.segment)
             this.segment = ''
             this.h.onInterim('')
@@ -197,25 +201,28 @@ export class IatSession implements IAsrSession {
             this.h.onInterim('')
           }
 
-          const normalCycle = ev.code === 1000 && this.lastEndedNormally
+          // 静默续连判定：正常收尾，或刚收完一段 3 秒内被服务端回收
+          // （讯飞分段后会回收句柄断开，close code 可能是 1000/1005/1006，均属正常节奏）
+          const normalCycle =
+            (ev.code === 1000 && this.lastEndedNormally) ||
+            (NORMAL_CLOSE_CODES.has(ev.code) && this.lastFinalAt > 0 && Date.now() - this.lastFinalAt < 3000)
           if (normalCycle) {
-            // 服务端收完一段后正常回收连接：静默续连，不计数不变灯
             this.lastEndedNormally = false
             this.firstSent = false
             this.scheduleReconnect(0, true)
             return
           }
 
-          // 异常断开：限频重连；10s 内连续 3 次则判定环境故障
+          // 异常断开：限频重连；15s 内连续 4 次则判定环境故障
           const now = Date.now()
-          this.abnormalCloses = this.abnormalCloses.filter((t) => now - t < 10_000)
+          this.abnormalCloses = this.abnormalCloses.filter((t) => now - t < 15_000)
           this.abnormalCloses.push(now)
           if (this.abnormalCloses.length >= MAX_FAST_FAILURES) {
             this.h.onError('网络连接反复中断：请检查网络后重新开始上课', true)
             this.stop()
             return
           }
-          this.h.onReconnecting?.(false)
+          this.h.onReconnecting?.(false, `断开(${ev.code})已自动续连`)
           this.firstSent = false
           this.scheduleReconnect(400, false)
         }

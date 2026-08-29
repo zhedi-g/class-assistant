@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { createAsrSession, type IAsrSession } from '../lib/iflytek'
 import { startCapture, type Capture } from '../lib/audio'
+import { createCorrector, type Corrector } from '../lib/correction'
 import { db } from '../lib/db'
 import { useSettings } from './settings'
 import { loadSecrets } from '../lib/secretStore'
@@ -8,10 +9,14 @@ import { loadSecrets } from '../lib/secretStore'
 interface SessionState {
   status: 'idle' | 'recording'
   startedAt: number | null
-  segments: { id: string; t: number; text: string; marked: boolean }[]
+  segments: { id: string; t: number; text: string; raw?: string; marked: boolean }[]
   interim: string
   conn: 'connecting' | 'open' | 'reconnecting'
   reconnects: number
+  /** 最近一次非静默断开的原因说明 */
+  connNote: string | null
+  /** AI 实时校对是否已启用 */
+  aiFix: boolean
   errMsg: string | null
   behindApp: boolean
   toast: string | null
@@ -51,6 +56,8 @@ export const useSession = create<SessionState>()((set, get) => ({
   interim: '',
   conn: 'connecting',
   reconnects: 0,
+  connNote: null,
+  aiFix: false,
   errMsg: null,
   behindApp: false,
   toast: null,
@@ -66,6 +73,19 @@ export const useSession = create<SessionState>()((set, get) => ({
       return
     }
 
+    // 热词：讯飞要求逗号分隔，把设置页的逐行输入规整化
+    const hotwordsList = s.hotwords
+      .split(/\r?\n/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+    const hotwords = hotwordsList.join(',')
+
+    // AI 实时校对：优先免费 GLM-Flash，未配 Key 则为纯讯飞模式
+    let corrector: Corrector | null = null
+    if (import.meta.env.VITE_MOCK_ASR !== '1') {
+      corrector = await createCorrector()
+    }
+
     set({
       status: 'recording',
       startedAt: Date.now(),
@@ -73,36 +93,33 @@ export const useSession = create<SessionState>()((set, get) => ({
       interim: '',
       conn: 'connecting',
       reconnects: 0,
+      connNote: null,
+      aiFix: !!corrector,
       errMsg: null,
       behindApp: false,
     })
     pendingMark = false
 
-    // 热词：讯飞要求逗号分隔，把设置页的逐行输入规整化
-    const hotwords = s.hotwords
-      .split(/\r?\n/)
-      .map((t) => t.trim())
-      .filter(Boolean)
-      .join(',')
-
     asr = createAsrSession(
       { appId, apiKey, apiSecret, hotwords: hotwords || undefined },
       {
-        onOpen: () => set({ conn: 'open' }),
-        onReconnecting: (silent) =>
+        onOpen: () => set({ conn: 'open', connNote: null }),
+        onReconnecting: (silent, reason) =>
           set((st) => ({
             conn: silent ? st.conn : 'reconnecting',
             reconnects: silent ? st.reconnects : st.reconnects + 1,
+            connNote: silent ? st.connNote : (reason ?? st.connNote),
           })),
         onInterim: (t) => set({ interim: t }),
         onFinal: (t) => {
           const marked = pendingMark
           pendingMark = false
+          const segId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
           set((st) => ({
             segments: [
               ...st.segments,
               {
-                id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                id: segId,
                 t: Date.now() - (st.startedAt ?? Date.now()),
                 text: t,
                 marked,
@@ -110,6 +127,22 @@ export const useSession = create<SessionState>()((set, get) => ({
             ],
             interim: '',
           }))
+          // 异步校对：完成后原位替换字幕，原始文本保留在 raw
+          if (corrector) {
+            const context = useSession
+              .getState()
+              .segments.filter((x) => x.id !== segId)
+              .slice(-3)
+              .map((x) => x.text)
+            void corrector.fix(t, context, hotwordsList).then((out) => {
+              if (!out) return
+              set((st) => ({
+                segments: st.segments.map((x) =>
+                  x.id === segId ? { ...x, raw: x.raw ?? x.text, text: out } : x,
+                ),
+              }))
+            })
+          }
         },
         onError: (msg, fatal) => {
           set({ errMsg: msg })

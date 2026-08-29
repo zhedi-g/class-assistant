@@ -7,7 +7,14 @@ import { readFileSync } from 'node:fs'
 import { mkdirSync } from 'node:fs'
 
 const BASE = process.env.BASE_URL || 'https://localhost:5173'
-const cfg = JSON.parse(readFileSync(new URL('../xfyun.local.json', import.meta.url), 'utf8'))
+const cfgRaw = JSON.parse(readFileSync(new URL('../xfyun.local.json', import.meta.url), 'utf8'))
+// 智谱 Key 从工作区密钥存档解析
+const zhipuKey = (
+  readFileSync(new URL('../../secrets.local.md', import.meta.url), 'utf8').match(
+    /API Key: `([^`]+\.TdLYk6PO1cY8KiA3)`/,
+  ) || []
+)[1]
+const cfg = { ...cfgRaw, zhipuKey }
 mkdirSync('shots', { recursive: true })
 
 const results = []
@@ -39,15 +46,18 @@ try {
   await page.getByPlaceholder('讯飞 APPID').fill(cfg.appId)
   await page.getByPlaceholder('讯飞 APIKey').fill(cfg.apiKey)
   await page.getByPlaceholder('讯飞 APISecret').fill(cfg.apiSecret)
+  await page.getByPlaceholder('智谱 API Key').fill(cfg.zhipuKey)
   await page.getByTestId('ifly-test-btn').click()
   await page.waitForSelector('[data-testid="ifly-test-result"]', { timeout: 15000 })
   const r = (await page.getByTestId('ifly-test-result').textContent()) || ''
   check('讯飞连通测试（真实 Key）', /连接正常/.test(r), r.trim())
 
-  // ── 课堂页：真实开始录音 ──
+  // ── 课堂页：真实开始录音（含 AI 校对） ──
   await page.locator('nav').getByText('课堂').click()
   await page.getByTestId('start-btn').click()
   await page.waitForSelector('[data-testid="conn-dot"].bg-emerald-500', { timeout: 12000 })
+  const aiFix = (await page.getByTestId('ai-fix').textContent()) || ''
+  check('AI 实时校对已启用', aiFix.includes('开'), aiFix)
   check('真实 WS 鉴权连接成功（识别中·绿点）', true)
   await page.waitForTimeout(6000) // 录 6 秒虚拟音源
   const err = await page.locator('[data-testid="err"]').count()
