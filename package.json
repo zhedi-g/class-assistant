@@ -12,10 +12,14 @@
     "test:m2": "node scripts/m2-test.mjs",
     "test:m3": "node scripts/m3-test.mjs",
     "test:m4": "node scripts/m4-test.mjs",
-    "test:m42": "node scripts/m42-test.mjs"
+    "test:m42": "node scripts/m42-test.mjs",
+    "test:d1": "tsx scripts/d1-test.ts",
+    "fixtures": "node scripts/make-fixtures.mjs"
   },
   "dependencies": {
     "dexie": "^4.0.0",
+    "jszip": "^3.10.1",
+    "pdfjs-dist": "^6.2.108",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "zustand": "^5.0.0"
@@ -28,6 +32,7 @@
     "@vitejs/plugin-react": "^5.0.0",
     "playwright": "^1.62.0",
     "tailwindcss": "^4.0.0",
+    "tsx": "^4.23.12",
     "typescript": "^5.6.0",
     "vite": "^7.0.0"
   },

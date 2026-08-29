@@ -13,10 +13,60 @@ export interface Segment {
   q?: boolean
 }
 
+/** 资料的一页/一页 PPT 解析结果 */
+export interface MaterialPage {
+  /** 页码或标签（如 "第3页"/"slide 3"） */
+  label: string
+  text: string
+  /** 需要视觉 OCR 的页（图片型 PPT/扫描 PDF），OCR 后回填 text */
+  needOcr?: boolean
+  /** 该页内嵌图片的 blob（needOcr 页用） */
+  imageBlobs?: Blob[]
+}
+
+export type MaterialKind = 'pptx' | 'pdf' | 'text' | 'image'
+
+export type MaterialStatus = 'parsing' | 'ready' | 'failed'
+
+/** 分析模式：有关联课堂记录=复习，无=预习 */
+export type AnalysisMode = 'preview' | 'review'
+
+export interface MaterialAnalysis {
+  mode: AnalysisMode
+  /** 关联的课堂记录 id 列表 */
+  lessonIds: number[]
+  /** 关联说明（如"匹配到 8月30日的课·术语重合78%"） */
+  matchNote: string
+  /** 结构化结果（LLM JSON） */
+  result: {
+    outline?: string[]
+    terms?: string[]
+    listenQuestions?: string[]
+    hardPoints?: string[]
+    compare?: { inMaterialOnly?: string[]; emphasizedInClass?: string[]; differs?: string[] }
+    reviewPlan?: string[]
+    examFocus?: string[]
+    summary?: string
+  }
+  createdAt: number
+}
+
 export interface QaPair {
   q: string
   a: string
   ts: number
+}
+
+export type MaterialRecord = {
+  id?: number
+  name: string
+  kind: MaterialKind
+  size: number
+  status: MaterialStatus
+  statusMsg?: string
+  pages: MaterialPage[]
+  analysis?: MaterialAnalysis
+  createdAt: number
 }
 
 export interface LessonRecord {
@@ -32,6 +82,7 @@ export interface LessonRecord {
 
 export const db = new Dexie('class-helper-data') as Dexie & {
   lessons: EntityTable<LessonRecord, 'id'>
+  materials: EntityTable<MaterialRecord, 'id'>
 }
 
 db.version(1).stores({
@@ -41,4 +92,10 @@ db.version(1).stores({
 // v2：补充 createdAt 索引（记录页按时间倒序查询）
 db.version(2).stores({
   lessons: '++id, date, startTs, createdAt',
+})
+
+// v3：资料库（M5）
+db.version(3).stores({
+  lessons: '++id, date, startTs, createdAt',
+  materials: '++id, createdAt',
 })
