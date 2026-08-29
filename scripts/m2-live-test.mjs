@@ -6,7 +6,7 @@ import { chromium } from 'playwright'
 import { readFileSync } from 'node:fs'
 import { mkdirSync } from 'node:fs'
 
-const BASE = process.env.BASE_URL || 'http://localhost:5173'
+const BASE = process.env.BASE_URL || 'https://localhost:5173'
 const cfg = JSON.parse(readFileSync(new URL('../xfyun.local.json', import.meta.url), 'utf8'))
 mkdirSync('shots', { recursive: true })
 
@@ -26,6 +26,7 @@ const ctx = await browser.newContext({
   hasTouch: true,
   locale: 'zh-CN',
   permissions: ['microphone'],
+  ignoreHTTPSErrors: true,
 })
 const page = await ctx.newPage()
 

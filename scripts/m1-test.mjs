@@ -2,7 +2,7 @@
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 
-const BASE = process.env.BASE_URL || 'http://localhost:5173'
+const BASE = process.env.BASE_URL || 'https://localhost:5173'
 mkdirSync('shots', { recursive: true })
 
 const results = []
@@ -18,6 +18,7 @@ const ctx = await browser.newContext({
   isMobile: true,
   hasTouch: true,
   locale: 'zh-CN',
+  ignoreHTTPSErrors: true,
 })
 const page = await ctx.newPage()
 
