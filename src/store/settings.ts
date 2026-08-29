@@ -21,6 +21,8 @@ interface SettingsState {
   zhipuModel: string
   deepseekModel: string
   iflytekAppId: string
+  /** 识别热词，每行一个 */
+  hotwords: string
   theme: 'dark' | 'light'
   setSettings: (patch: Partial<Omit<SettingsState, 'setSettings'>>) => void
 }
@@ -32,6 +34,7 @@ export const useSettings = create<SettingsState>()(
       zhipuModel: 'glm-4-flash',
       deepseekModel: 'deepseek-v4-flash',
       iflytekAppId: '',
+      hotwords: '',
       theme: 'dark',
       setSettings: (patch) => set(patch),
     }),

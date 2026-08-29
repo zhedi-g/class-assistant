@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useSettings } from './store/settings'
+import { useSession } from './store/session'
 import LivePage from './pages/LivePage'
 import RecordsPage from './pages/RecordsPage'
 import SettingsPage from './pages/SettingsPage'
@@ -9,6 +10,7 @@ type Tab = 'live' | 'records' | 'settings'
 export default function App() {
   const [tab, setTab] = useState<Tab>('live')
   const theme = useSettings((s) => s.theme)
+  const toast = useSession((s) => s.toast)
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')
@@ -22,6 +24,11 @@ export default function App() {
         {tab === 'records' && <RecordsPage />}
         {tab === 'settings' && <SettingsPage />}
       </main>
+      {toast && (
+        <div data-testid="toast" className="fixed bottom-20 left-1/2 z-20 -translate-x-1/2 rounded-full bg-zinc-900/90 px-4 py-2 text-sm text-white shadow-lg dark:bg-zinc-100/90 dark:text-zinc-900">
+          {toast}
+        </div>
+      )}
       <BottomNav tab={tab} onChange={setTab} />
     </div>
   )

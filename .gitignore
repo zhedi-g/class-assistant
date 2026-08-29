@@ -3,4 +3,5 @@ dist
 shots
 *.local
 secrets*
+xfyun.local.*
 .DS_Store

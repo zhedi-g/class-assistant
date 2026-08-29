@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
+    "dev:mock": "vite --host --port 5174 --strictPort",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host",
-    "test:m1": "node scripts/m1-test.mjs"
+    "test:m1": "node scripts/m1-test.mjs",
+    "test:m2": "node scripts/m2-test.mjs"
   },
   "dependencies": {
     "dexie": "^4.0.0",

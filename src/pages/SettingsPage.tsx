@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { loadSecrets, saveSecrets, type SecretMap } from '../lib/secretStore'
 import { useSettings, ZHIPU_MODELS, DEEPSEEK_MODELS, type ProviderId } from '../store/settings'
-import { testZhipu, testDeepseek, type TestResult } from '../lib/connTest'
+import { testZhipu, testDeepseek, testIflytek, type TestResult } from '../lib/connTest'
 
 const inputCls =
   'w-full rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-800'
@@ -10,9 +10,10 @@ export default function SettingsPage() {
   const s = useSettings()
   const [secrets, setSecrets] = useState<SecretMap | null>(null)
   const [saved, setSaved] = useState(false)
-  const [testing, setTesting] = useState<ProviderId | null>(null)
+  const [testing, setTesting] = useState<string | null>(null)
   const [zhipuResult, setZhipuResult] = useState<TestResult | null>(null)
   const [dsResult, setDsResult] = useState<TestResult | null>(null)
+  const [iflyResult, setIflyResult] = useState<TestResult | null>(null)
 
   useEffect(() => {
     loadSecrets().then(setSecrets)
@@ -28,14 +29,20 @@ export default function SettingsPage() {
     })
   }
 
-  async function runTest(p: ProviderId) {
+  async function runTest(p: string) {
     if (!secrets) return
     setTesting(p)
-    const key = p === 'zhipu' ? secrets['zhipu.apiKey'] : secrets['deepseek.apiKey']
-    const model = p === 'zhipu' ? s.zhipuModel : s.deepseekModel
-    const result = p === 'zhipu' ? await testZhipu(key || '', model) : await testDeepseek(key || '', model)
-    if (p === 'zhipu') setZhipuResult(result)
-    else setDsResult(result)
+    let result: TestResult
+    if (p === 'zhipu') {
+      result = await testZhipu(secrets['zhipu.apiKey'] ?? '', s.zhipuModel)
+      setZhipuResult(result)
+    } else if (p === 'deepseek') {
+      result = await testDeepseek(secrets['deepseek.apiKey'] ?? '', s.deepseekModel)
+      setDsResult(result)
+    } else {
+      result = await testIflytek(s.iflytekAppId, secrets['iflytek.apiKey'] ?? '', secrets['iflytek.apiSecret'] ?? '')
+      setIflyResult(result)
+    }
     setTesting(null)
   }
 
@@ -69,7 +76,31 @@ export default function SettingsPage() {
           value={secrets?.['iflytek.apiSecret'] ?? ''}
           onChange={(v) => upd('iflytek.apiSecret', v)}
         />
-        <p className="text-xs text-zinc-400 dark:text-zinc-600">连通性测试随 M2 转写上线；字段保存后届时直接生效。</p>
+        <div className="flex items-center gap-3">
+          <button
+            data-testid="ifly-test-btn"
+            onClick={() => runTest('iflytek')}
+            disabled={testing !== null || !s.iflytekAppId || !secrets?.['iflytek.apiKey'] || !secrets?.['iflytek.apiSecret']}
+            className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+          >
+            {testing === 'iflytek' ? '测试中…' : '测试连接'}
+          </button>
+          {iflyResult && (
+            <p data-testid="ifly-test-result" className={`text-xs ${iflyResult.ok ? 'text-emerald-500' : 'text-red-500'}`}>
+              {iflyResult.msg}
+            </p>
+          )}
+        </div>
+      </Card>
+
+      {/* 热词 */}
+      <Card title="识别热词" desc="每行一个词。课程术语提前加入可明显降低错字率；教材导入（M5.5）后此表会自动扩充。">
+        <textarea
+          className={inputCls + ' min-h-24'}
+          placeholder={'深度求索\n动能定理'}
+          value={s.hotwords}
+          onChange={(e) => s.setSettings({ hotwords: e.target.value })}
+        />
       </Card>
 
       {/* 智谱 */}
