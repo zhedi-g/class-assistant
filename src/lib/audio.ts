@@ -3,6 +3,8 @@
 const WORKLET_SRC = `class PC extends AudioWorkletProcessor{process(i){const c=i[0][0];if(c)this.port.postMessage(c);return true}}registerProcessor('pcm-capture',PC)`
 
 export interface Capture {
+  /** 切后台回来后 AudioContext 可能被系统挂起，需要手动恢复 */
+  resume(): Promise<void>
   stop(): Promise<void>
 }
 
@@ -55,6 +57,9 @@ export async function startCapture(
     }
 
     return {
+      resume: async () => {
+        if (ctx.state === 'suspended') await ctx.resume().catch(() => {})
+      },
       stop: async () => {
         try {
           node.disconnect()

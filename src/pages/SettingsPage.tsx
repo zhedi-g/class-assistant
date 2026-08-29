@@ -200,6 +200,22 @@ export default function SettingsPage() {
             ))}
           </div>
         </Field>
+        <button
+          data-testid="wipe-all-btn"
+          onClick={() => {
+            if (!confirm('清除本机全部数据？将删除密钥、配置与所有课堂记录，不可恢复。')) return
+            try {
+              localStorage.clear()
+              indexedDB.deleteDatabase('class-helper')
+              indexedDB.deleteDatabase('class-helper-data')
+            } finally {
+              location.reload()
+            }
+          }}
+          className="w-full rounded-xl border border-red-300 py-2.5 text-sm text-red-500 dark:border-red-500/40"
+        >
+          清除本机全部数据
+        </button>
       </Card>
 
       <p className="px-1 pb-2 text-[11px] leading-relaxed text-zinc-400 dark:text-zinc-600">

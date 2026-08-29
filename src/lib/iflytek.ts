@@ -1,10 +1,13 @@
-// 讯飞语音听写（iat v2）会话层：WebCrypto 鉴权、40ms 帧、60s 断连自动重连、错误分类。
+// 讯飞语音听写（iat v2）会话层 v2：静默续连、重连锁、12s 音频缓冲、限速补发、
+// 动态修正（dwa=wpgs，服务端回头改同音错字）、可恢复错误自愈（10165 等句柄失效）。
 // 协议：首帧 common+business+data(status0) → 中间帧 data(status1) → 尾帧 data(status2)。
-// 单连接最长 60s，55s 时主动重建连接并续传最近音频，避免服务器掐断丢字。
+// 服务端行为：VAD 分段结束（status=2）或连接超时后会回收句柄并断开连接——
+// 客户端必须把「code=1000 且刚收完一段」视为正常续连信号，静默重建，不惊动用户。
 
 export interface AsrHandlers {
+  /** silent=true 表示服务端正常收尾后的静默续连：不计数、不变状态灯 */
+  onReconnecting?: (silent?: boolean) => void
   onOpen?: () => void
-  onReconnecting?: () => void
   onInterim: (text: string) => void
   onFinal: (text: string) => void
   onError: (msg: string, fatal: boolean) => void
@@ -14,6 +17,7 @@ export interface AsrOptions {
   appId: string
   apiKey: string
   apiSecret: string
+  /** 逗号分隔的热词串 */
   hotwords?: string
 }
 
@@ -24,6 +28,11 @@ export interface IAsrSession {
 }
 
 const enc = new TextEncoder()
+const RECONNECT_BACKLOG = 300 // 续传缓冲上限：300 帧 ≈ 12s 音频
+const FLUSH_BATCH = 25 // 每跳最多补发 25 帧 ≈ 1s 音频，避免突发被服务端拒绝
+const MAX_FAST_FAILURES = 3 // 10 秒内异常断开 ≥3 次视为环境故障，停止并提示
+/** 出现即干净重连、不惊动用户的可恢复错误（句柄回收/临时资源不足等） */
+const RECOVERABLE_CODES = new Set([10165, 10110, 11201, 11202])
 
 function b64(bytes: ArrayBuffer | Uint8Array): string {
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
@@ -46,32 +55,35 @@ export async function buildIatUrl(apiKey: string, apiSecret: string): Promise<st
   return `wss://iat-api.xfyun.cn/v2/iat?authorization=${authorization}&date=${encodeURIComponent(date)}&host=iat-api.xfyun.cn`
 }
 
-function friendlyError(code: number, message: string): { msg: string; fatal: boolean } {
+function friendlyError(code: number, message: string): { msg: string; fatal: boolean; recoverable: boolean } {
   const map: Record<number, string> = {
     40001: '鉴权失败：APIKey/APISecret 不正确',
     40002: '鉴权失败：签名校验不通过',
     40003: '鉴权失败：时间戳偏差过大，请校准系统时间',
     10105: '服务未开通：请到讯飞控制台领取「语音听写」免费包',
     10106: '请求参数异常',
-    10110: '服务资源不足',
     10163: '请求参数非法',
+    10165: '服务端会话句柄已回收',
     11200: '当日免费时长已用完',
-    11201: '并发路数超限',
-    11202: '后端识别异常',
     11203: '音频格式错误：需要 16k/16bit 单声道 PCM',
   }
+  if (RECOVERABLE_CODES.has(code)) return { msg: `错误 ${code}`, fatal: false, recoverable: true }
   const fatal = [40001, 40002, 40003, 10105, 11200].includes(code)
-  return { msg: map[code] ?? `错误 ${code}：${message || '未知错误'}`, fatal }
+  return { msg: map[code] ?? `错误 ${code}：${message || '未知错误'}`, fatal, recoverable: false }
 }
 
 export class IatSession implements IAsrSession {
   private ws: WebSocket | null = null
   private watchdog: ReturnType<typeof setTimeout> | null = null
+  private flusher: ReturnType<typeof setInterval> | null = null
   private closed = false
   private firstSent = false
   private pending: string[] = []
   private segment = ''
   private myId = 0
+  private reconnecting = false
+  private lastEndedNormally = false
+  private abnormalCloses: number[] = []
 
   constructor(
     private opts: AsrOptions,
@@ -98,8 +110,11 @@ export class IatSession implements IAsrSession {
             language: 'zh_cn',
             domain: 'iat',
             accent: 'mandarin',
-            vad_eos: 3000,
+            // 停顿 5s 才断段：减少分段次数，也就减少了服务端回收句柄的次数
+            vad_eos: 5000,
             ptt: 1,
+            // 动态修正：服务端会对同音错字回头改写（pgs=rpl 时替换指定区间）
+            dwa: 'wpgs',
           }
           if (this.opts.hotwords) business.hotwords = this.opts.hotwords
           const first = this.pending.shift() ?? ''
@@ -110,35 +125,63 @@ export class IatSession implements IAsrSession {
               data: { status: 0, format: 'audio/L16;rate=16000', encoding: 'raw', audio: first },
             }),
           )
-          for (const audio of this.pending) {
-            ws.send(JSON.stringify({ data: { status: 1, format: 'audio/L16;rate=16000', encoding: 'raw', audio } }))
-          }
-          this.pending = []
+          this.startFlusher()
           this.armWatchdog()
         }
 
         ws.onmessage = (ev) => {
           if (this.closed || myId !== this.myId) return
-          let j: { code?: number; message?: string; data?: { status?: number; result?: { ws?: { cw?: { w?: string }[] }[] } } }
+          let j: {
+            code?: number
+            message?: string
+            data?: {
+              status?: number
+              result?: {
+                ws?: { cw?: { w?: string }[] }[]
+                pgs?: 'apd' | 'rpl'
+                rg?: [number, number]
+              }
+            }
+          }
           try {
             j = JSON.parse(String(ev.data))
           } catch {
             return
           }
           if (j.code !== 0 && j.code !== undefined) {
-            const { msg, fatal } = friendlyError(j.code, j.message ?? '')
-            this.h.onError(msg, fatal)
-            if (fatal) this.stop()
+            const { msg, fatal, recoverable } = friendlyError(j.code, j.message ?? '')
+            if (fatal) {
+              this.h.onError(msg, true)
+              this.stop()
+              return
+            }
+            if (recoverable) {
+              // 句柄已失效等：当前连接已废，干净重建并丢弃过期积压，不打扰用户
+              this.segment = ''
+              this.pending = []
+              this.h.onReconnecting?.(false)
+              this.hardReconnect()
+              return
+            }
+            this.h.onError(msg, false)
             return
           }
+
           const result = j.data?.result
           if (!result) return
           const text = (result.ws ?? []).map((w) => (w.cw ?? []).map((c) => c.w ?? '').join('')).join('')
-          if (text) {
+          if (result.pgs === 'rpl' && Array.isArray(result.rg) && result.rg.length === 2) {
+            // 动态修正：用新文本替换 segment 中 [rg[0], rg[1]) 区间
+            const b = Math.max(0, Math.min(result.rg[0], this.segment.length))
+            const e = Math.max(b, Math.min(result.rg[1], this.segment.length))
+            this.segment = this.segment.slice(0, b) + text + this.segment.slice(e)
+          } else if (text) {
             this.segment += text
-            this.h.onInterim(this.segment)
           }
+          if (this.segment) this.h.onInterim(this.segment)
+
           if (j.data?.status === 2 && this.segment) {
+            this.lastEndedNormally = true
             this.h.onFinal(this.segment)
             this.segment = ''
             this.h.onInterim('')
@@ -147,14 +190,34 @@ export class IatSession implements IAsrSession {
 
         ws.onclose = (ev) => {
           if (this.closed || myId !== this.myId) return
-          if (ev.code === 1000 && this.segment) {
-            // 正常关闭但段未收尾：兜底落段
+          // 段未收尾就被断开：兜底落段，避免丢最后半句
+          if (this.segment) {
             this.h.onFinal(this.segment)
             this.segment = ''
+            this.h.onInterim('')
           }
-          // 非正常关闭（含服务器 60s 掐断）：自动重连续传
-          this.h.onReconnecting?.()
-          this.connect()
+
+          const normalCycle = ev.code === 1000 && this.lastEndedNormally
+          if (normalCycle) {
+            // 服务端收完一段后正常回收连接：静默续连，不计数不变灯
+            this.lastEndedNormally = false
+            this.firstSent = false
+            this.scheduleReconnect(0, true)
+            return
+          }
+
+          // 异常断开：限频重连；10s 内连续 3 次则判定环境故障
+          const now = Date.now()
+          this.abnormalCloses = this.abnormalCloses.filter((t) => now - t < 10_000)
+          this.abnormalCloses.push(now)
+          if (this.abnormalCloses.length >= MAX_FAST_FAILURES) {
+            this.h.onError('网络连接反复中断：请检查网络后重新开始上课', true)
+            this.stop()
+            return
+          }
+          this.h.onReconnecting?.(false)
+          this.firstSent = false
+          this.scheduleReconnect(400, false)
         }
       })
       .catch((e: Error) => {
@@ -162,12 +225,35 @@ export class IatSession implements IAsrSession {
       })
   }
 
+  private scheduleReconnect(delay: number, _silent: boolean): void {
+    if (this.reconnecting || this.closed) return
+    this.reconnecting = true
+    setTimeout(() => {
+      this.reconnecting = false
+      if (this.closed) return
+      this.connect()
+    }, delay)
+  }
+
+  /** 立即弃掉当前连接并重建（用于句柄失效等自愈场景） */
+  private hardReconnect(): void {
+    if (this.closed) return
+    this.myId++
+    this.firstSent = false
+    try {
+      this.ws?.close()
+    } catch {}
+    this.scheduleReconnect(0, false)
+  }
+
   private armWatchdog(): void {
     if (this.watchdog) clearTimeout(this.watchdog)
+    // 讯飞单连接最长 60s，55s 主动重建（旧连接关闭事件因 myId 已自增而被忽略）
     this.watchdog = setTimeout(() => {
       if (this.closed) return
-      this.h.onReconnecting?.()
+      this.h.onReconnecting?.(true)
       this.myId++
+      this.firstSent = false
       try {
         this.ws?.close()
       } catch {}
@@ -175,15 +261,25 @@ export class IatSession implements IAsrSession {
     }, 55_000)
   }
 
+  /** 限速补发：每 40ms 最多 25 帧（1s 音频），重连后平滑追赶，不突发 */
+  private startFlusher(): void {
+    if (this.flusher) return
+    this.flusher = setInterval(() => {
+      const ws = this.ws
+      if (!ws || ws.readyState !== WebSocket.OPEN || !this.firstSent || this.pending.length === 0) return
+      const batch = this.pending.splice(0, FLUSH_BATCH)
+      for (const audio of batch) {
+        ws.send(JSON.stringify({ data: { status: 1, format: 'audio/L16;rate=16000', encoding: 'raw', audio } }))
+      }
+    }, 40)
+  }
+
   sendAudio(b64Audio: string): void {
     if (this.closed) return
     this.pending.push(b64Audio)
-    if (this.pending.length > 150) this.pending.splice(0, this.pending.length - 150)
-    if (this.ws?.readyState === WebSocket.OPEN && this.firstSent) {
-      const frames = this.pending.splice(0)
-      for (const audio of frames) {
-        this.ws.send(JSON.stringify({ data: { status: 1, format: 'audio/L16;rate=16000', encoding: 'raw', audio } }))
-      }
+    if (this.pending.length > RECONNECT_BACKLOG) {
+      // 超过 12s 才丢最旧的（正常重连 <1s，不会走到这里）
+      this.pending.splice(0, this.pending.length - RECONNECT_BACKLOG)
     }
   }
 
@@ -191,6 +287,8 @@ export class IatSession implements IAsrSession {
     if (this.closed) return
     this.closed = true
     if (this.watchdog) clearTimeout(this.watchdog)
+    if (this.flusher) clearInterval(this.flusher)
+    this.flusher = null
     if (this.segment) {
       this.h.onFinal(this.segment)
       this.segment = ''

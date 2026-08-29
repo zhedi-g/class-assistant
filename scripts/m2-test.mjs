@@ -76,6 +76,19 @@ try {
   check('记录页出现本节课卡片', cardText.length > 0, cardText.slice(0, 40))
   check('记录卡片含条数/时长统计', /条 · /.test(cardText))
   await page.screenshot({ path: 'shots/07-记录列表.png' })
+
+  // ── 记录详情：点开看全文 ──
+  await page.getByTestId('record-toggle').first().click()
+  await page.waitForSelector('[data-testid="record-detail"]', { timeout: 3000 })
+  const detail = (await page.getByTestId('record-detail').textContent()) || ''
+  check('记录可点开查看全文（含转写内容）', detail.includes('动能定理') || detail.includes('深度求索'), detail.slice(0, 30))
+
+  // ── 删除单条（接受 confirm 弹窗）──
+  page.once('dialog', (d) => d.accept())
+  await page.getByTestId('delete-one-btn').click()
+  await page.waitForTimeout(600)
+  const leftCards = await page.getByTestId('record-card').count()
+  check('删除本条后记录消失', leftCards === 0, `剩余 ${leftCards} 条`)
 } catch (e) {
   check('测试流程无异常', false, e.message)
   await page.screenshot({ path: 'shots/98-异常.png' }).catch(() => {})

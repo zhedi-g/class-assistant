@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { fmtDuration, useSession } from '../store/session'
+import { fmtDuration, resumeCapture, useSession } from '../store/session'
 import { loadSecrets, type SecretMap } from '../lib/secretStore'
 
 const MILESTONES = [
@@ -29,7 +29,11 @@ export default function LivePage() {
 
   useEffect(() => {
     if (!recording) return
-    const onVis = () => useSession.getState().setBehind(document.hidden)
+    const onVis = () => {
+      useSession.getState().setBehind(document.hidden)
+      // 回到前台时 AudioContext 可能被系统挂起，主动恢复采集
+      if (!document.hidden) resumeCapture()
+    }
     document.addEventListener('visibilitychange', onVis)
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [recording])

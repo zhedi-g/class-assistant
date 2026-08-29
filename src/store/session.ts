@@ -27,6 +27,11 @@ let wakeLock: { release?: () => Promise<void> } | null = null
 let pendingMark = false
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 
+/** 切后台回来后调用：AudioContext 可能被系统挂起，恢复采集 */
+export function resumeCapture(): void {
+  void capture?.resume()
+}
+
 function showToast(msg: string) {
   if (toastTimer) clearTimeout(toastTimer)
   useSession.setState({ toast: msg })
@@ -73,11 +78,22 @@ export const useSession = create<SessionState>()((set, get) => ({
     })
     pendingMark = false
 
+    // 热词：讯飞要求逗号分隔，把设置页的逐行输入规整化
+    const hotwords = s.hotwords
+      .split(/\r?\n/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .join(',')
+
     asr = createAsrSession(
-      { appId, apiKey, apiSecret, hotwords: s.hotwords || undefined },
+      { appId, apiKey, apiSecret, hotwords: hotwords || undefined },
       {
         onOpen: () => set({ conn: 'open' }),
-        onReconnecting: () => set((st) => ({ conn: 'reconnecting', reconnects: st.reconnects + 1 })),
+        onReconnecting: (silent) =>
+          set((st) => ({
+            conn: silent ? st.conn : 'reconnecting',
+            reconnects: silent ? st.reconnects : st.reconnects + 1,
+          })),
         onInterim: (t) => set({ interim: t }),
         onFinal: (t) => {
           const marked = pendingMark
