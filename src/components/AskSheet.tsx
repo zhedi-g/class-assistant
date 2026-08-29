@@ -1,64 +1,29 @@
-// 查词/课中问答底部弹层：点字幕句唤起，AI 流式回答，录音不中断。
-import { useEffect, useRef, useState } from 'react'
-import { askAI } from '../lib/ai'
+// 查词/课中问答底部弹层：点字幕句或「问 AI」按钮唤起，流式回答，历史保存在会话中。
+import { useEffect, useRef } from 'react'
+import { useSession } from '../store/session'
 
 export interface SheetSeg {
   id: string
   text: string
 }
 
-interface Msg {
-  role: 'user' | 'assistant'
-  content: string
-  meta?: string
-}
-
 export default function AskSheet({ seg, onClose }: { seg: SheetSeg | null; onClose: () => void }) {
-  const [msgs, setMsgs] = useState<Msg[]>([])
-  const [input, setInput] = useState('')
-  const [busy, setBusy] = useState(false)
+  const msgs = useSession((s) => s.askMsgs)
+  const busy = useSession((s) => s.askBusy)
+  const aiFix = useSession((s) => s.aiFix)
+  const sendAsk = useSession((s) => s.sendAsk)
+  const inputRef = useRef<HTMLInputElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight })
   }, [msgs])
 
-  async function send(question: string) {
-    const q = question.trim()
+  function send() {
+    const q = inputRef.current?.value.trim()
     if (!q || busy) return
-    setInput('')
-    setMsgs((m) => [...m, { role: 'user', content: q }, { role: 'assistant', content: '' }])
-    setBusy(true)
-    const context = seg ? `【学生点选的字幕句】${seg.text}` : ''
-    try {
-      await askAI({
-        question: q,
-        context,
-        onDelta: (delta) => {
-          setMsgs((m) => {
-            const copy = [...m]
-            const last = copy[copy.length - 1]
-            copy[copy.length - 1] = { ...last, content: last.content + delta }
-            return copy
-          })
-        },
-      })
-      setMsgs((m) => {
-        const copy = [...m]
-        const last = copy[copy.length - 1]
-        copy[copy.length - 1] = { ...last, meta: '基于本节课最近字幕' }
-        return copy
-      })
-    } catch (e) {
-      setMsgs((m) => {
-        const copy = [...m]
-        const last = copy[copy.length - 1]
-        copy[copy.length - 1] = { ...last, content: '回答失败：' + (e as Error).message }
-        return copy
-      })
-    } finally {
-      setBusy(false)
-    }
+    if (inputRef.current) inputRef.current.value = ''
+    void sendAsk(q, seg?.text)
   }
 
   return (
@@ -87,6 +52,12 @@ export default function AskSheet({ seg, onClose }: { seg: SheetSeg | null; onClo
           </button>
         </div>
 
+        {!aiFix && (
+          <div data-testid="ask-nokey" className="mx-4 mt-3 rounded-xl border border-amber-400/50 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+            AI 问答需要智谱或 DeepSeek 的 API Key（讯飞的 Key 只用于语音识别）。请到「设置」填写后重试。
+          </div>
+        )}
+
         <div ref={bodyRef} data-testid="ask-body" className="min-h-32 flex-1 space-y-3 overflow-y-auto p-4">
           {msgs.length === 0 && (
             <div className="space-y-2 text-xs text-zinc-400 dark:text-zinc-500">
@@ -113,21 +84,20 @@ export default function AskSheet({ seg, onClose }: { seg: SheetSeg | null; onClo
           ))}
         </div>
 
-        <div className="flex items-center gap-2 border-t border-zinc-100 p-3 pb-safe dark:border-zinc-800">
+        <div className="pb-safe flex items-center gap-2 border-t border-zinc-100 p-3 dark:border-zinc-800">
           <input
+            ref={inputRef}
             data-testid="ask-input"
             className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-800"
             placeholder="输入问题或要查的词"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') void send(input)
+              if (e.key === 'Enter') send()
             }}
           />
           <button
             data-testid="ask-send"
-            onClick={() => void send(input)}
-            disabled={busy || !input.trim()}
+            onClick={send}
+            disabled={busy}
             className="shrink-0 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-40"
           >
             {busy ? '回答中' : '发送'}

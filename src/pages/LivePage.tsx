@@ -5,6 +5,8 @@ import { vibrateSupported } from '../lib/vibrate'
 import { useSettings } from '../store/settings'
 import AskSheet, { type SheetSeg } from '../components/AskSheet'
 
+type AskTarget = SheetSeg | null
+
 const MILESTONES = [
   { id: 'M1', label: '设置与密钥管理', done: true },
   { id: 'M2', label: '实时语音转写（讯飞）', done: true },
@@ -17,7 +19,8 @@ export default function LivePage() {
   const s = useSession()
   const recording = s.status === 'recording'
   const [elapsed, setElapsed] = useState(0)
-  const [sheetSeg, setSheetSeg] = useState<SheetSeg | null>(null)
+  // ask=null 表示弹层关闭；打开时用对象包裹，seg 为 null 表示未选中具体句子
+  const [ask, setAsk] = useState<{ seg: SheetSeg | null } | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -52,12 +55,12 @@ export default function LivePage() {
       </header>
 
       {recording ? (
-        <RecordingView s={s} elapsed={elapsed} listRef={listRef} onSelectSeg={setSheetSeg} />
+        <RecordingView s={s} elapsed={elapsed} listRef={listRef} onOpenAsk={(seg) => setAsk({ seg })} />
       ) : (
         <IdleView />
       )}
 
-      {sheetSeg && <AskSheet seg={sheetSeg} onClose={() => setSheetSeg(null)} />}
+      {ask && <AskSheet seg={ask.seg} onClose={() => setAsk(null)} />}
     </div>
   )
 }
@@ -126,12 +129,12 @@ function RecordingView({
   s,
   elapsed,
   listRef,
-  onSelectSeg,
+  onOpenAsk,
 }: {
   s: ReturnType<typeof useSession.getState>
   elapsed: number
   listRef: React.RefObject<HTMLDivElement | null>
-  onSelectSeg: (seg: { id: string; text: string }) => void
+  onOpenAsk: (seg: AskTarget) => void
 }) {
   const connText =
     s.conn === 'open' ? '识别中' : s.conn === 'reconnecting' ? '重连中…' : '连接中…'
@@ -190,7 +193,7 @@ function RecordingView({
           <p
             key={seg.id}
             data-testid="segment"
-            onClick={() => onSelectSeg({ id: seg.id, text: seg.text })}
+            onClick={() => onOpenAsk({ id: seg.id, text: seg.text })}
             className={
               'cursor-pointer active:opacity-70 ' +
               (seg.matched
@@ -236,6 +239,13 @@ function RecordingView({
           结束课堂
         </button>
       </div>
+      <button
+        data-testid="ask-fab"
+        onClick={() => onOpenAsk(null)}
+        className="w-full rounded-2xl border border-blue-500/60 py-3 text-sm font-medium text-blue-500 active:scale-[0.99]"
+      >
+        💬 问 AI（查词 / 提问，自动带课堂内容）
+      </button>
     </div>
   )
 }

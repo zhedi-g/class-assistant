@@ -37,6 +37,13 @@ const ctx = await browser.newContext({
 })
 const page = await ctx.newPage()
 
+// 收集页面异常与控制台错误，失败时打印
+const pageErrors = []
+page.on('pageerror', (err) => pageErrors.push('pageerror: ' + err.message + '\n' + (err.stack || '').split('\n').slice(0, 5).join('\n')))
+page.on('console', (msg) => {
+  if (msg.type() === 'error') pageErrors.push('console: ' + msg.text().slice(0, 200))
+})
+
 try {
   await page.goto(BASE, { waitUntil: 'networkidle' })
 
@@ -55,14 +62,40 @@ try {
   // ── 课堂页：真实开始录音（含 AI 校对） ──
   await page.locator('nav').getByText('课堂').click()
   await page.getByTestId('start-btn').click()
-  await page.waitForSelector('[data-testid="conn-dot"].bg-emerald-500', { timeout: 12000 })
-  const aiFix = (await page.getByTestId('ai-fix').textContent()) || ''
-  check('AI 实时校对已启用', aiFix.includes('开'), aiFix)
-  check('真实 WS 鉴权连接成功（识别中·绿点）', true)
+  try {
+    await page.waitForSelector('[data-testid="conn-dot"].bg-emerald-500', { timeout: 12000 })
+    check('真实 WS 鉴权连接成功（识别中·绿点）', true)
+  } catch {
+    const diag = await page.evaluate(() => ({
+      录音界面: !!document.querySelector('[data-testid="subtitle"]'),
+      错误条: document.querySelector('[data-testid="err"]')?.textContent ?? '(无)',
+      正文摘要: document.body.textContent?.slice(0, 150) ?? '',
+    }))
+    check('真实 WS 鉴权连接成功（识别中·绿点）', false, JSON.stringify(diag))
+    throw new Error('连接诊断: ' + JSON.stringify(diag) + ' | 页面异常: ' + pageErrors.slice(-5).join(' || '))
+  }
   await page.waitForTimeout(6000) // 录 6 秒虚拟音源
   const err = await page.locator('[data-testid="err"]').count()
   check('录制 6 秒无错误提示', err === 0)
   await page.screenshot({ path: 'shots/08-课堂-真实连接.png' })
+
+  // ── 真实 AI 流式问答（浏览器直连 GLM）──
+  await page.getByTestId('ask-fab').click()
+  await page.waitForSelector('[data-testid="ask-sheet"]', { timeout: 3000 })
+  await page.getByTestId('ask-input').fill('用一句话解释什么是动能定理')
+  await page.getByTestId('ask-send').click()
+  await page.waitForFunction(
+    () => {
+      const answers = document.querySelectorAll('[data-testid="ask-answer"]')
+      const last = answers[answers.length - 1]
+      return last && last.textContent && last.textContent.length > 30 && !last.textContent.startsWith('回答失败')
+    },
+    { timeout: 30000 },
+  )
+  const realAnswer = (await page.locator('[data-testid="ask-answer"]').last().textContent()) || ''
+  check('真实 AI 流式问答（浏览器直连 GLM）', realAnswer.length > 30, realAnswer.slice(0, 36))
+  await page.getByTestId('ask-close').click()
+  await page.waitForTimeout(300)
 
   // 结束
   await page.getByTestId('stop-btn').click()

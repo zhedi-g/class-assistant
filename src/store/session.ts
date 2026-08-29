@@ -2,10 +2,17 @@ import { create } from 'zustand'
 import { createAsrSession, type IAsrSession } from '../lib/iflytek'
 import { startCapture, type Capture } from '../lib/audio'
 import { createCorrector, type Corrector } from '../lib/correction'
+import { askAI } from '../lib/ai'
 import { db } from '../lib/db'
 import { useSettings } from './settings'
 import { loadSecrets } from '../lib/secretStore'
 import { unlockVibration, vibrateAlert } from '../lib/vibrate'
+
+export interface AskMsg {
+  role: 'user' | 'assistant'
+  content: string
+  meta?: string
+}
 
 interface SessionState {
   status: 'idle' | 'recording'
@@ -18,6 +25,9 @@ interface SessionState {
   connNote: string | null
   /** AI 实时校对是否已启用 */
   aiFix: boolean
+  /** 课中问答记录（弹层历史，下课随记录存库） */
+  askMsgs: AskMsg[]
+  askBusy: boolean
   /** 本次会话命中的提醒关键词 */
   alertHits: { word: string; t: number }[]
   alertBanner: { word: string } | null
@@ -28,6 +38,7 @@ interface SessionState {
   stop: () => Promise<void>
   mark: () => void
   setBehind: (b: boolean) => void
+  sendAsk: (question: string, segText?: string) => Promise<void>
 }
 
 let asr: IAsrSession | null = null
@@ -93,6 +104,8 @@ export const useSession = create<SessionState>()((set, get) => ({
   reconnects: 0,
   connNote: null,
   aiFix: false,
+  askMsgs: [],
+  askBusy: false,
   alertHits: [],
   alertBanner: null,
   errMsg: null,
@@ -111,14 +124,14 @@ export const useSession = create<SessionState>()((set, get) => ({
     }
 
     // 热词：讯飞要求逗号分隔，把设置页的逐行输入规整化
-    const hotwordsList = s.hotwords
+    const hotwordsList = (s.hotwords ?? '')
       .split(/\r?\n/)
       .map((t) => t.trim())
       .filter(Boolean)
     const hotwords = hotwordsList.join(',')
 
-    // 提醒关键词：逐行解析
-    alertWordsList = s.alertWords
+    // 提醒关键词：逐行解析（对旧版本 localStorage 缺字段的情况做兜底）
+    alertWordsList = (s.alertWords ?? '')
       .split(/\r?\n/)
       .map((t) => t.trim())
       .filter(Boolean)
@@ -142,6 +155,8 @@ export const useSession = create<SessionState>()((set, get) => ({
       reconnects: 0,
       connNote: null,
       aiFix: !!corrector,
+      askMsgs: [],
+      askBusy: false,
       alertHits: [],
       alertBanner: null,
       errMsg: null,
@@ -253,11 +268,22 @@ export const useSession = create<SessionState>()((set, get) => ({
     if (segments.length > 0 || durationSec >= 5) {
       const marks = segments.filter((x) => x.marked).length
       const hits = useSession.getState().alertHits.length
+      // 课中问答随记录存档（user/assistant 两两配对）
+      const qas: { q: string; a: string; ts: number }[] = []
+      let pendQ: string | null = null
+      for (const m of st.askMsgs) {
+        if (m.role === 'user') pendQ = m.content
+        else if (pendQ !== null) {
+          qas.push({ q: pendQ, a: m.content, ts: Date.now() })
+          pendQ = null
+        }
+      }
       await db.lessons.add({
         date: new Date().toLocaleDateString('zh-CN'),
         startTs: st.startedAt ?? Date.now(),
         durationSec,
         segments,
+        qas: qas.length > 0 ? qas : undefined,
         createdAt: Date.now(),
       })
       showToast(
@@ -278,6 +304,46 @@ export const useSession = create<SessionState>()((set, get) => ({
     } else {
       pendingMark = true
       showToast('下一句将自动标记为重点')
+    }
+  },
+
+  sendAsk: async (question, segText) => {
+    const q = question.trim()
+    if (!q || get().askBusy) return
+    set((st) => ({ askMsgs: [...st.askMsgs, { role: 'user', content: q }, { role: 'assistant', content: '' }], askBusy: true }))
+    const st = get()
+    const recent = st.segments.slice(-8).map((x) => x.text).join(' / ').slice(-2500)
+    const context = [
+      segText ? `【学生点选的字幕句】${segText}` : '',
+      recent ? `【最近课堂字幕】${recent}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n')
+    const append = (delta: string) => {
+      set((s2) => {
+        const copy = [...s2.askMsgs]
+        const last = copy[copy.length - 1]
+        copy[copy.length - 1] = { ...last, content: last.content + delta }
+        return { askMsgs: copy }
+      })
+    }
+    try {
+      await askAI({ question: q, context, onDelta: append })
+      set((s2) => {
+        const copy = [...s2.askMsgs]
+        const last = copy[copy.length - 1]
+        copy[copy.length - 1] = { ...last, meta: '基于本节课最近字幕' }
+        return { askMsgs: copy }
+      })
+    } catch (e) {
+      set((s2) => {
+        const copy = [...s2.askMsgs]
+        const last = copy[copy.length - 1]
+        copy[copy.length - 1] = { ...last, content: '回答失败：' + (e as Error).message }
+        return { askMsgs: copy }
+      })
+    } finally {
+      set({ askBusy: false })
     }
   },
 

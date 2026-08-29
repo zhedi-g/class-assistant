@@ -11,12 +11,20 @@ export interface Segment {
   matched?: string
 }
 
+export interface QaPair {
+  q: string
+  a: string
+  ts: number
+}
+
 export interface LessonRecord {
   id?: number
   date: string
   startTs: number
   durationSec: number
   segments: Segment[]
+  /** 课中/课后的 AI 问答 */
+  qas?: QaPair[]
   createdAt: number
 }
 

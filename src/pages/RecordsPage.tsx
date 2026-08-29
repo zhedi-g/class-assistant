@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { db, type LessonRecord } from '../lib/db'
+import { askAI } from '../lib/ai'
 
 function fmtOffset(ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -9,6 +10,9 @@ function fmtOffset(ms: number): string {
 export default function RecordsPage() {
   const [records, setRecords] = useState<LessonRecord[] | null>(null)
   const [openId, setOpenId] = useState<number | null>(null)
+  const [qaInput, setQaInput] = useState('')
+  const [qaBusyId, setQaBusyId] = useState<number | null>(null)
+  const [qaStream, setQaStream] = useState('')
 
   const refresh = () => {
     db.lessons
@@ -20,6 +24,35 @@ export default function RecordsPage() {
   }
 
   useEffect(refresh, [])
+
+  async function askRecord(r: LessonRecord) {
+    const q = qaInput.trim()
+    if (!q || qaBusyId !== null || r.id === undefined) return
+    setQaBusyId(r.id)
+    setQaStream('')
+    const context = `【本节课转写】${r.segments.map((s) => s.text).join(' / ').slice(-3500)}`
+    let a = ''
+    try {
+      await askAI({
+        question: q,
+        context,
+        onDelta: (d) => {
+          a += d
+          setQaStream(a)
+        },
+      })
+      await db.lessons.update(r.id, {
+        qas: [...(r.qas ?? []), { q, a, ts: Date.now() }],
+      })
+      setQaInput('')
+      setQaStream('')
+      refresh()
+    } catch (e) {
+      setQaStream('回答失败：' + (e as Error).message)
+    } finally {
+      setQaBusyId(null)
+    }
+  }
 
   async function removeOne(id: number | undefined) {
     if (id === undefined) return
@@ -124,6 +157,48 @@ export default function RecordsPage() {
                         {seg.text}
                       </p>
                     ))}
+
+                    {/* 课中/课后问答 */}
+                    {r.qas && r.qas.length > 0 && (
+                      <div data-testid="record-qas" className="space-y-2 border-t border-zinc-100 pt-2 dark:border-zinc-800">
+                        <p className="text-[11px] font-semibold text-zinc-400">问答 {r.qas.length}</p>
+                        {r.qas.map((qa, i) => (
+                          <div key={i} className="space-y-1">
+                            <p className="text-right text-xs text-blue-500">Q：{qa.q}</p>
+                            <p className="whitespace-pre-wrap rounded-xl bg-zinc-100 px-2.5 py-1.5 text-xs leading-relaxed dark:bg-zinc-800">
+                              A：{qa.a}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* 对这节课提问 */}
+                    <div className="mt-1 flex items-center gap-2 border-t border-zinc-100 pt-2 dark:border-zinc-800">
+                      <input
+                        data-testid="rec-ask-input"
+                        className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-2.5 py-2 text-xs outline-none focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-800"
+                        placeholder="对这节课提问，如：这节课的重点是什么"
+                        value={openId === r.id ? qaInput : ''}
+                        onChange={(e) => setQaInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void askRecord(r)
+                        }}
+                      />
+                      <button
+                        data-testid="rec-ask-send"
+                        onClick={() => void askRecord(r)}
+                        disabled={qaBusyId !== null || !qaInput.trim()}
+                        className="shrink-0 rounded-xl bg-blue-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-40"
+                      >
+                        {qaBusyId === r.id ? '回答中' : '提问'}
+                      </button>
+                    </div>
+                    {qaBusyId === r.id && qaStream && (
+                      <p className="whitespace-pre-wrap rounded-xl bg-blue-50 px-2.5 py-1.5 text-xs leading-relaxed text-zinc-700 dark:bg-blue-500/10 dark:text-zinc-300">
+                        {qaStream}
+                      </p>
+                    )}
                   </div>
                   <div className="flex justify-end border-t border-zinc-100 px-4 py-2 dark:border-zinc-800">
                     <button
