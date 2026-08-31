@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { createAsrSession, type IAsrSession } from '../lib/iflytek'
-import { startCapture, type Capture } from '../lib/audio'
+import { startCapture, startReplay, type Capture } from '../lib/audio'
 import { createCorrector, type Corrector } from '../lib/correction'
 import { askAI } from '../lib/ai'
 import { detectQuestion, isDuplicateQuestion } from '../lib/question'
@@ -8,6 +8,12 @@ import { db } from '../lib/db'
 import { useSettings } from './settings'
 import { loadSecrets } from '../lib/secretStore'
 import { unlockVibration, vibrateAlert, vibrateLight } from '../lib/vibrate'
+
+let recorder: MediaRecorder | null = null
+let recChunks: Blob[] = []
+let meterTimer: ReturnType<typeof setInterval> | null = null
+let lastLevel = 0
+let lastPct: number | null = null
 
 /** 主动回答的系统提示：价值判定 + 回答二合一；不值得答返回 [跳过] */
 const PROACTIVE_SYSTEM =
@@ -38,13 +44,17 @@ interface SessionState {
   askBusy: boolean
   /** 检测到课堂提问且已生成回答，等待学生查看 */
   askNotice: { q: string } | null
+  /** 拾音电平（0~1）与最近 1 秒语音占比 */
+  audioLevel: number
+  speechPct: number | null
   /** 本次会话命中的提醒关键词 */
   alertHits: { word: string; t: number }[]
   alertBanner: { word: string } | null
   errMsg: string | null
   behindApp: boolean
   toast: string | null
-  start: () => Promise<void>
+  /** replayFile 传入时走"文件回放"源（基准/课后精转），否则用麦克风 */
+  start: (replayFile?: File) => Promise<void>
   stop: () => Promise<void>
   mark: () => void
   setBehind: (b: boolean) => void
@@ -123,13 +133,15 @@ export const useSession = create<SessionState>()((set, get) => ({
   askMsgs: [],
   askBusy: false,
   askNotice: null,
+  audioLevel: 0,
+  speechPct: null,
   alertHits: [],
   alertBanner: null,
   errMsg: null,
   behindApp: false,
   toast: null,
 
-  start: async () => {
+  start: async (replayFile?: File) => {
     const s = useSettings.getState()
     const secrets = await loadSecrets()
     const appId = s.iflytekAppId
@@ -315,8 +327,36 @@ export const useSession = create<SessionState>()((set, get) => ({
     asr.start()
 
     try {
-      capture = await startCapture((b64) => asr?.sendAudio(b64), (msg) => set({ errMsg: msg }))
-    } catch {
+      capture = replayFile
+        ? await startReplay(replayFile, (b64) => asr?.sendAudio(b64))
+        : await startCapture(
+            (b64) => asr?.sendAudio(b64),
+            (msg) => set({ errMsg: msg }),
+            (level, pct) => {
+              lastLevel = level
+              lastPct = pct
+            },
+          )
+      // 录音备份：原始麦克风流（不经增强），随课堂记录存档
+      if (!replayFile && useSettings.getState().keepAudio && typeof MediaRecorder !== 'undefined') {
+        try {
+          recChunks = []
+          recorder = new MediaRecorder(capture.stream!, {
+            mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '',
+          })
+          recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) recChunks.push(e.data)
+          }
+          recorder.start(10000)
+        } catch {
+          recorder = null
+        }
+      }
+      // 拾音仪表：500ms 汇总上报
+      if (meterTimer) clearInterval(meterTimer)
+      meterTimer = setInterval(() => set({ audioLevel: lastLevel, speechPct: lastPct }), 500)
+    } catch (e) {
+      if (replayFile) set({ errMsg: '回放失败：' + (e as Error).message })
       await get().stop()
       return
     }
@@ -345,6 +385,25 @@ export const useSession = create<SessionState>()((set, get) => ({
       await wakeLock?.release?.()
     } catch {}
     wakeLock = null
+    if (meterTimer) clearInterval(meterTimer)
+    meterTimer = null
+
+    // 录音备份收尾
+    let audioBlob: Blob | null = null
+    if (recorder && recorder.state !== 'inactive') {
+      audioBlob = await new Promise<Blob | null>((resolve) => {
+        const r = recorder!
+        r.onstop = () => resolve(recChunks.length ? new Blob(recChunks, { type: r.mimeType || 'audio/webm' }) : null)
+        try {
+          r.stop()
+        } catch {
+          resolve(null)
+        }
+        setTimeout(() => resolve(recChunks.length ? new Blob(recChunks, { type: r.mimeType || 'audio/webm' }) : null), 1500)
+      })
+    }
+    recorder = null
+    recChunks = []
 
     const segments = st.segments
     const durationSec = st.startedAt ? Math.round((Date.now() - st.startedAt) / 1000) : 0
@@ -369,6 +428,7 @@ export const useSession = create<SessionState>()((set, get) => ({
         durationSec,
         segments,
         qas: qas.length > 0 ? qas : undefined,
+        audio: audioBlob ?? undefined,
         createdAt: Date.now(),
       })
       showToast(

@@ -31,6 +31,10 @@ interface SettingsState {
   analysisModel: 'balanced' | 'fast'
   /** 图片页视觉识别页数上限 */
   ocrLimit: number
+  /** 纠错词典，每行 "错误=正确" */
+  corrections: string
+  /** 课中保留原始录音备份 */
+  keepAudio: boolean
   theme: 'dark' | 'light'
   setSettings: (patch: Partial<Omit<SettingsState, 'setSettings'>>) => void
 }
@@ -49,6 +53,8 @@ export const useSettings = create<SettingsState>()(
       proactive: true,
       analysisModel: 'fast',
       ocrLimit: 20,
+      corrections: '',
+      keepAudio: true,
       theme: 'dark',
       setSettings: (patch) => set(patch),
     }),

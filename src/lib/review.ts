@@ -33,9 +33,11 @@ export function toAnkiTxt(cards: PackCard[]): string {
 function lessonsContext(lessons: LessonRecord[], perLesson = 2600): string {
   return lessons
     .map((l, i) => {
-      const cleanedHint = ''
-      const text = l.segments.map((s) => s.text).join(' ').slice(0, perLesson)
-      return `\n【课堂 ${i + 1} · ${l.date}】${cleanedHint}${text}`
+      // 优先使用精校稿（干净、术语正确）
+      const text = (
+        l.refined ? `【精校稿】${l.refined}` : l.segments.map((s) => s.text).join(' ')
+      ).slice(0, perLesson)
+      return `\n【课堂 ${i + 1} · ${l.date}】${text}`
     })
     .join('\n')
     .slice(0, 14_000)

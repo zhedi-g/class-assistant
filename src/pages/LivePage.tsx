@@ -71,6 +71,7 @@ function IdleView() {
   const alertWords = useSettings((st) => st.alertWords)
   const [secrets, setSecrets] = useState<SecretMap | null>(null)
   const [todos, setTodos] = useState<{ text: string; date: string }[]>([])
+  const replayRef = useRef<HTMLInputElement>(null)
   useEffect(() => {
     loadSecrets().then(setSecrets)
     // 汇总各节课清洗出的待办（最近 3 条）
@@ -129,6 +130,25 @@ function IdleView() {
         className="w-full rounded-2xl bg-blue-600 py-4 text-lg font-semibold text-white shadow-lg shadow-blue-600/20 active:scale-[0.99]"
       >
         开始上课
+      </button>
+      <input
+        ref={replayRef}
+        data-testid="replay-input"
+        type="file"
+        accept="audio/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (f) void s.start(f)
+          e.target.value = ''
+        }}
+      />
+      <button
+        data-testid="replay-btn"
+        onClick={() => replayRef.current?.click()}
+        className="w-full rounded-xl border border-zinc-300 py-2 text-xs text-zinc-500 dark:border-zinc-700"
+      >
+        📁 回放音频文件（走同一条识别链路，基准/课后精转用）
       </button>
       <p className="text-center text-xs text-zinc-400 dark:text-zinc-600">
         录音期间页面会申请保持亮屏；锁屏或切后台可能导致浏览器暂停采集
@@ -216,6 +236,22 @@ function RecordingView({
         {s.reconnects > 0 && <span className="text-amber-500">重连 {s.reconnects} 次</span>}
       </div>
       {s.connNote && <p className="px-1 text-[11px] text-zinc-400 dark:text-zinc-600">{s.connNote}</p>}
+
+      {/* 拾音仪表 */}
+      <div className="flex items-center gap-2 px-1">
+        <div data-testid="level-meter" className="h-1.5 flex-1 overflow-hidden rounded bg-zinc-200 dark:bg-zinc-800">
+          <div
+            data-testid="level-bar"
+            className="h-full bg-emerald-500 transition-all duration-200"
+            style={{ width: `${Math.min(100, Math.round(s.audioLevel * 100))}%` }}
+          />
+        </div>
+        {s.speechPct !== null && (
+          <span data-testid="speech-pct" className="text-[11px] text-zinc-400">
+            语音 {s.speechPct}%
+          </span>
+        )}
+      </div>
 
       {s.errMsg && (
         <p data-testid="err" className="rounded-xl border border-red-300/50 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">

@@ -83,6 +83,7 @@ export class IatSession implements IAsrSession {
   private pending: string[] = []
   private segment = ''
   private myId = 0
+  private msgCount = 0
   private reconnecting = false
   private lastEndedNormally = false
   private lastFinalAt = 0
@@ -108,6 +109,7 @@ export class IatSession implements IAsrSession {
         ws.onopen = () => {
           if (this.closed || myId !== this.myId) return
           this.firstSent = true
+          console.log(`[iat#${myId}] 连接成功，开始推流`)
           this.h.onOpen?.()
           const business: Record<string, unknown> = {
             language: 'zh_cn',
@@ -150,6 +152,9 @@ export class IatSession implements IAsrSession {
             j = JSON.parse(String(ev.data))
           } catch {
             return
+          }
+          if (this.msgCount++ < 3) {
+            console.log(`[iat#${myId}] 响应：code=${j.code} status=${j.data?.status} 词数=${j.data?.result?.ws?.length ?? 0}`)
           }
           if (j.code !== 0 && j.code !== undefined) {
             const { msg, fatal, recoverable } = friendlyError(j.code, j.message ?? '')
@@ -268,16 +273,15 @@ export class IatSession implements IAsrSession {
     }, 55_000)
   }
 
-  /** 限速补发：每 40ms 最多 25 帧（1s 音频），重连后平滑追赶，不突发 */
+  /** 补帧泵：严格 40ms 一帧（=实时速率）。重连积压按实时顺序追平——
+   *  超速推送（一次发多帧）会被服务端判定异常并回收句柄（10165） */
   private startFlusher(): void {
     if (this.flusher) return
     this.flusher = setInterval(() => {
       const ws = this.ws
       if (!ws || ws.readyState !== WebSocket.OPEN || !this.firstSent || this.pending.length === 0) return
-      const batch = this.pending.splice(0, FLUSH_BATCH)
-      for (const audio of batch) {
-        ws.send(JSON.stringify({ data: { status: 1, format: 'audio/L16;rate=16000', encoding: 'raw', audio } }))
-      }
+      const audio = this.pending.shift()!
+      ws.send(JSON.stringify({ data: { status: 1, format: 'audio/L16;rate=16000', encoding: 'raw', audio } }))
     }, 40)
   }
 

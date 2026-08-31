@@ -252,6 +252,36 @@ export default function SettingsPage() {
             ))}
           </select>
         </Field>
+        <Field label="纠错词典">
+          <textarea
+            data-testid="corrections"
+            className={inputCls + ' min-h-20'}
+            placeholder={'飞机=分析\n滴度=滴定'}
+            value={s.corrections}
+            onChange={(e) => s.setSettings({ corrections: e.target.value })}
+          />
+          <p className="mt-1 text-[11px] text-zinc-400 dark:text-zinc-600">
+            格式「错误=正确」，每行一条。你的高频错字沉淀在这里，精校与实时校对都会自动应用。
+          </p>
+        </Field>
+        <Field label="课堂录音备份">
+          <div className="flex gap-2">
+            {([true, false] as const).map((v) => (
+              <button
+                key={String(v)}
+                onClick={() => s.setSettings({ keepAudio: v })}
+                className={`flex-1 rounded-xl border px-3 py-2 text-sm ${
+                  s.keepAudio === v
+                    ? 'border-blue-500 text-blue-500'
+                    : 'border-zinc-300 text-zinc-500 dark:border-zinc-700'
+                }`}
+              >
+                {v ? '保留（约 15MB/节）' : '不保留'}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1 text-[11px] text-zinc-400 dark:text-zinc-600">保留后可在记录详情回放与导出原始音频，清空记录时一并删除。</p>
+        </Field>
         <Field label="主题">
           <div className="flex gap-2">
             {(['dark', 'light'] as const).map((t) => (

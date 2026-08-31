@@ -21,6 +21,8 @@
     "fixtures": "node scripts/make-fixtures.mjs"
   },
   "dependencies": {
+    "@jitsi/rnnoise-wasm": "^0.2.1",
+    "@ricky0123/vad-web": "^0.0.30",
     "dexie": "^4.0.0",
     "jszip": "^3.10.1",
     "pdfjs-dist": "^6.2.108",

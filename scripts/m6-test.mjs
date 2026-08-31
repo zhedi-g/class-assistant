@@ -42,7 +42,7 @@ try {
   await page.goto(BASE, { waitUntil: 'networkidle' })
 
   // ── 录两节课（供单课 + 跨课）──
-  await recordOnce(4)
+  await recordOnce(4, true)
   check('第 1 节课录制完成', true)
   await recordOnce(2)
   check('第 2 节课录制完成', true)
@@ -52,6 +52,13 @@ try {
   await page.waitForSelector('[data-testid="record-card"]', { timeout: 5000 })
   await page.getByTestId('record-toggle').nth(1).click()
   await page.waitForSelector('[data-testid="clean-btn"]', { timeout: 3000 })
+  // 录音备份：回放控件与导出
+  const audioRow = await page.getByTestId('lesson-audio').isVisible().catch(() => false)
+  check('课堂录音备份存在（回放控件）', audioRow)
+  const dl = page.waitForEvent('download', { timeout: 8000 }).catch(() => null)
+  await page.getByTestId('export-audio').click()
+  const audioDl = await dl
+  check('录音导出触发下载', !!audioDl, audioDl ? audioDl.suggestedFilename() : '')
   await page.getByTestId('clean-btn').click()
   await page.waitForSelector('[data-testid="clean-stats"]', { timeout: 15000 })
   const stats = (await page.getByTestId('clean-stats').textContent()) || ''

@@ -91,6 +91,10 @@ export interface LessonRecord {
   qas?: QaPair[]
   /** 课后清洗结果（M6） */
   cleaned?: LessonCleaned
+  /** 精校后的干净转写稿（粘贴手机转写 → AI 精校） */
+  refined?: string
+  /** 课堂原始录音备份（webm/opus，M6.6） */
+  audio?: Blob
   createdAt: number
 }
 

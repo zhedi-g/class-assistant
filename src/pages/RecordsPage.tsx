@@ -4,6 +4,7 @@ import { db, type LessonRecord, type ReviewPackRecord } from '../lib/db'
 import { cleanLesson, CATEGORY_META, REMOVED_CATEGORIES, type SegCategory } from '../lib/clean'
 import { generatePackData, toAnkiTxt } from '../lib/review'
 import { askAI } from '../lib/ai'
+import { refineTranscript, parseDict } from '../lib/correction'
 import { useSession } from '../store/session'
 import { useSettings } from '../store/settings'
 
@@ -172,6 +173,33 @@ export default function RecordsPage() {
   )
 }
 
+function AudioRow({ blob, date }: { blob: Blob; date: string }) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    const u = URL.createObjectURL(blob)
+    setUrl(u)
+    return () => URL.revokeObjectURL(u)
+  }, [blob])
+
+  function exportAudio() {
+    if (!url) return
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `课堂录音-${date}.webm`
+    a.click()
+  }
+
+  return (
+    <div data-testid="lesson-audio" className="space-y-1.5 border-b border-zinc-100 px-4 py-3 dark:border-zinc-800">
+      <p className="text-[11px] font-semibold text-zinc-500">🎙️ 课堂录音备份</p>
+      {url && <audio controls src={url} className="w-full" />}
+      <button onClick={exportAudio} data-testid="export-audio" className="rounded-lg border border-zinc-300 px-2.5 py-1 text-[11px] text-zinc-500 dark:border-zinc-700">
+        导出音频
+      </button>
+    </div>
+  )
+}
+
 function RecordCard({
   record: r,
   open,
@@ -198,6 +226,27 @@ function RecordCard({
   const [askInput, setAskInput] = useState('')
   const [askBusy, setAskBusy] = useState(false)
   const [askStream, setAskStream] = useState('')
+  const [refineInput, setRefineInput] = useState('')
+  const [refineBusy, setRefineBusy] = useState(false)
+
+  async function doRefine(target: LessonRecord) {
+    const raw = refineInput.trim()
+    if (!raw || refineBusy || target.id === undefined) return
+    setRefineBusy(true)
+    try {
+      const hotwords = useSettings.getState().hotwords.split(/\r?\n/).map((t) => t.trim()).filter(Boolean)
+      const dict = parseDict(useSettings.getState().corrections)
+      const { refined } = await refineTranscript(raw, hotwords, dict)
+      await db.lessons.update(target.id, { refined })
+      setRefineInput('')
+      onChanged()
+      notify('精校完成：干净稿已保存')
+    } catch (e) {
+      notify('精校失败：' + (e as Error).message)
+    } finally {
+      setRefineBusy(false)
+    }
+  }
 
   async function askRecord(target: LessonRecord) {
     const q = askInput.trim()
@@ -300,6 +349,8 @@ function RecordCard({
 
       {open && (
         <div className="border-t border-zinc-100 dark:border-zinc-800">
+          {/* 录音备份 */}
+          {r.audio && <AudioRow blob={r.audio} date={r.date} />}
           {/* M6 操作行 */}
           <div className="flex flex-wrap gap-2 px-4 pt-3">
             <button
@@ -379,6 +430,38 @@ function RecordCard({
               </button>
             </div>
           )}
+
+          {/* 转写精校：粘贴手机转写烂稿 → AI 修复 */}
+          <details className="mx-4 mt-3 rounded-xl border border-zinc-200 dark:border-zinc-800">
+            <summary data-testid="refine-toggle" className="cursor-pointer px-3 py-2 text-xs font-semibold text-zinc-500">
+              📋 粘贴转写文本 → AI 精校（修复手机转写的错字/漏字/断句）
+            </summary>
+            <div className="space-y-2 p-3">
+              <textarea
+                data-testid="refine-input"
+                className="min-h-20 w-full rounded-xl border border-zinc-300 bg-white px-2.5 py-2 text-xs leading-relaxed outline-none focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-800"
+                placeholder="粘贴手机录音机转写的文本（可整段粘贴），AI 结合课程术语表修复错字与断句"
+                value={refineInput}
+                onChange={(e) => setRefineInput(e.target.value)}
+              />
+              <button
+                data-testid="refine-btn"
+                onClick={() => void doRefine(r)}
+                disabled={refineBusy || !refineInput.trim()}
+                className="w-full rounded-xl bg-emerald-600 py-2 text-xs font-medium text-white disabled:opacity-40"
+              >
+                {refineBusy ? '精校中（分段处理，约几十秒）…' : '✨ AI 精校'}
+              </button>
+              {r.refined && (
+                <div data-testid="refined-out">
+                  <p className="mb-1 text-[11px] font-semibold text-emerald-500">✨ 精校稿（原始转写仍保留可对照）</p>
+                  <p className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-xl bg-emerald-50 px-2.5 py-2 text-xs leading-relaxed dark:bg-emerald-500/10">
+                    {r.refined}
+                  </p>
+                </div>
+              )}
+            </div>
+          </details>
 
           {/* 转写全文 */}
           <div className="mx-4 mt-3 max-h-60 space-y-2 overflow-y-auto border-t border-zinc-100 pt-3 dark:border-zinc-800">

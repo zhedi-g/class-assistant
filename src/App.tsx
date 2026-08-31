@@ -1,14 +1,17 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useSettings } from './store/settings'
 import { useSession } from './store/session'
 import LivePage from './pages/LivePage'
 import RecordsPage from './pages/RecordsPage'
 import MaterialsPage from './pages/MaterialsPage'
 import SettingsPage from './pages/SettingsPage'
+import BenchPage from './pages/BenchPage'
 
 type Tab = 'live' | 'records' | 'materials' | 'settings'
 
 export default function App() {
+  // 基准测试页：?bench=1 访问（清晰计划第 0 层，独立于主应用）
+  const isBench = useMemo(() => new URLSearchParams(window.location.search).has('bench'), [])
   const [tab, setTab] = useState<Tab>('live')
   const theme = useSettings((s) => s.theme)
   const toast = useSession((s) => s.toast)
@@ -17,6 +20,8 @@ export default function App() {
     document.documentElement.classList.toggle('dark', theme === 'dark')
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#09090b' : '#ffffff')
   }, [theme])
+
+  if (isBench) return <BenchPage />
 
   return (
     <div className="flex min-h-dvh flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
